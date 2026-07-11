@@ -2,6 +2,7 @@ package hop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +12,10 @@ import (
 	"time"
 )
 
-const acceptedRef = "accepted"
+const (
+	acceptedRef                 = "accepted"
+	reconciliationSummaryPrefix = "hop-reconciliation-conflicts:"
+)
 
 type Service struct {
 	Root  string
@@ -36,6 +40,11 @@ func InitProject(ctx context.Context, path string) (*Service, State, error) {
 	if err := os.MkdirAll(filepath.Join(hopDir, "workspaces"), 0o755); err != nil {
 		return nil, State{}, fmt.Errorf("create Hop project directory: %w", err)
 	}
+	releaseInit, err := acquireProjectLock(ctx, root, "init")
+	if err != nil {
+		return nil, State{}, err
+	}
+	defer releaseInit()
 	store, err := OpenStore(filepath.Join(hopDir, "hop.db"))
 	if err != nil {
 		return nil, State{}, err
@@ -52,6 +61,9 @@ func InitProject(ctx context.Context, path string) (*Service, State, error) {
 			service.Close()
 			return nil, State{}, err
 		}
+		// Derived-ref repair acquires accept.lock. Release init.lock first so a
+		// validation child opening this project cannot invert those locks.
+		releaseInit()
 		if err := service.reconcileDerivedRefs(ctx, true); err != nil {
 			service.Close()
 			return nil, State{}, err
@@ -99,6 +111,11 @@ func OpenProject(start string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	releaseInit, err := acquireProjectLock(context.Background(), root, "init")
+	if err != nil {
+		return nil, err
+	}
+	defer releaseInit()
 	store, err := OpenStore(filepath.Join(root, ".hop", "hop.db"))
 	if err != nil {
 		return nil, err
@@ -128,6 +145,8 @@ func OpenProject(start string) (*Service, error) {
 	}
 	service := &Service{Root: root, Store: store, Repo: repo}
 	reconcileAccepted := os.Getenv("HOP_ACCEPTANCE_LOCK_HELD") != "1"
+	// Never hold init.lock while derived-ref repair acquires accept.lock.
+	releaseInit()
 	if err := service.reconcileDerivedRefs(context.Background(), reconcileAccepted); err != nil {
 		service.Close()
 		return nil, err
@@ -459,6 +478,18 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	if err != nil {
 		return ProposalResult{}, err
 	}
+	reconciliationPrompt, reconciliation, err := s.Store.ReconciliationPromptForAttempt(ctx, attempt.ID)
+	if err != nil {
+		return ProposalResult{}, err
+	}
+	var reconciliationConflicts []string
+	if reconciliation {
+		conflicts, ok := decodeReconciliationConflicts(reconciliationPrompt.Summary)
+		if !ok {
+			return ProposalResult{}, fmt.Errorf("reconciliation prompt %s has invalid conflict metadata", reconciliationPrompt.ID)
+		}
+		reconciliationConflicts = conflicts
+	}
 	workspaceRepo, err := OpenRepository(attempt.Workspace)
 	if err != nil {
 		return ProposalResult{}, err
@@ -467,17 +498,46 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	if err != nil {
 		return ProposalResult{}, err
 	}
+	if reconciliation {
+		unresolved, err := unresolvedReconciliationMarkers(ctx, workspaceRepo, tree, reconciliationConflicts)
+		if err != nil {
+			return ProposalResult{}, err
+		}
+		if len(unresolved) > 0 {
+			return ProposalResult{}, fmt.Errorf("reconciliation still contains merge markers in: %s", strings.Join(unresolved, ", "))
+		}
+	}
+	checks, err := s.Store.ListChecks(ctx, attempt.ID, tree)
+	if err != nil {
+		return ProposalResult{}, err
+	}
+	if reconciliation {
+		validated := false
+		for _, check := range checks {
+			if check.ExitCode == 0 {
+				validated = true
+				break
+			}
+		}
+		if !validated {
+			return ProposalResult{}, fmt.Errorf("reconciliation must pass hop check on the resolved tree before proposing")
+		}
+	}
 	if strings.TrimSpace(summary) == "" {
 		summary = task.Title
 	}
 	summary, _ = RedactPromptSecrets(summary)
+	canonicalAnchorID := attempt.BaseStateID
+	if reconciliation && reconciliationPrompt.CanonicalAnchorID != "" {
+		canonicalAnchorID = reconciliationPrompt.CanonicalAnchorID
+	}
 	parents := canonicalizeParents([]Parent{{StateID: attempt.HeadStateID, Role: "run_parent", Order: 0}})
 	proposal := State{
 		ID:                newID("r"),
 		Kind:              StateProposal,
 		TaskID:            attempt.TaskID,
 		AttemptID:         attempt.ID,
-		CanonicalAnchorID: attempt.BaseStateID,
+		CanonicalAnchorID: canonicalAnchorID,
 		SourceTree:        tree,
 		GitCommit:         commit,
 		Summary:           summary,
@@ -498,10 +558,6 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	}
 	_ = s.Store.UpdateAttemptStatus(ctx, attempt.ID, "proposed")
 	_ = s.Store.UpdateTaskStatus(ctx, task.ID, "proposed")
-	checks, err := s.Store.ListChecks(ctx, attempt.ID, tree)
-	if err != nil {
-		return ProposalResult{}, err
-	}
 	return ProposalResult{Proposal: proposal, Checks: checks}, nil
 }
 
@@ -547,7 +603,11 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	if err != nil {
 		return AcceptResult{}, err
 	}
-	base, err := s.Store.GetState(ctx, attempt.BaseStateID)
+	baseStateID := proposal.CanonicalAnchorID
+	if baseStateID == "" {
+		baseStateID = attempt.BaseStateID
+	}
+	base, err := s.Store.GetState(ctx, baseStateID)
 	if err != nil {
 		return AcceptResult{}, err
 	}
@@ -562,10 +622,6 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	currentPaths, err := s.Repo.ChangedPaths(ctx, base.GitCommit, current.GitCommit)
 	if err != nil {
 		return AcceptResult{}, err
-	}
-	overlap := intersectPaths(proposalPaths, currentPaths)
-	if len(overlap) > 0 {
-		return AcceptResult{}, &ConflictError{Paths: overlap}
 	}
 	finalTree := proposal.SourceTree
 	if current.SourceTree != base.SourceTree {
@@ -725,6 +781,210 @@ func (s *Service) Sync(ctx context.Context) (SyncResult, error) {
 	}
 	defer release()
 	return s.syncLocked(ctx)
+}
+
+// Refresh prepares an agent-editable three-way conflict tree in the original
+// attempt workspace. It appends an internal reconciliation prompt so the agent
+// can resolve genuine conflicts without asking the user to coordinate them.
+func (s *Service) Refresh(ctx context.Context, proposalID string) (RefreshResult, error) {
+	release, err := acquireProjectLock(ctx, s.Root, "accept")
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	defer release()
+
+	proposal, err := s.Store.GetState(ctx, proposalID)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	if proposal.Kind != StateProposal {
+		return RefreshResult{}, fmt.Errorf("state %s is %s, not a proposal", proposal.ID, proposal.Kind)
+	}
+	sourceAttempt, err := s.Store.GetAttempt(ctx, proposal.AttemptID)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	task, err := s.Store.GetTask(ctx, proposal.TaskID)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	current, err := s.Store.AcceptedHead(ctx)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	if existing, exists, err := s.Store.ReconciliationPrompt(ctx, proposal.ID, current.ID); err != nil {
+		return RefreshResult{}, err
+	} else if exists {
+		return s.reconciliationResult(ctx, existing, task, proposal, current, true)
+	}
+	baseStateID := proposal.CanonicalAnchorID
+	if baseStateID == "" {
+		baseStateID = sourceAttempt.BaseStateID
+	}
+	base, err := s.Store.GetState(ctx, baseStateID)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	conflictTree, conflicts, err := s.Repo.ComposeTrees(ctx, base.GitCommit, current.GitCommit, proposal.GitCommit)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	if len(conflicts) == 0 {
+		return RefreshResult{}, fmt.Errorf("proposal %s now merges cleanly; retry hop land", proposal.ID)
+	}
+	commit, err := s.Repo.CommitTree(ctx, conflictTree, []string{current.GitCommit, proposal.GitCommit},
+		fmt.Sprintf("Reconcile %s against %s\n", proposal.ID, current.ID))
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	summary, err := encodeReconciliationConflicts(conflicts)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	instruction := fmt.Sprintf(
+		"Resolve proposal %s (%s) against accepted state %s (%s). Preserve both compatible intents. Inspect both input states for structural, delete/rename, mode, symlink, or binary conflicts that may have no text markers; resolve every conflict intentionally, remove all merge markers, run hop check, propose the result, and land it without asking the user to coordinate the merge. Conflict candidates: %s",
+		proposal.ID, proposal.Summary, current.ID, current.Summary, strings.Join(conflicts, ", "))
+	instruction, _ = RedactPromptSecrets(instruction)
+	attemptID := newID("at")
+	workspace := filepath.Join(s.Root, ".hop", "workspaces", attemptID)
+	reconciliationAttempt := Attempt{
+		ID:          attemptID,
+		TaskID:      proposal.TaskID,
+		Agent:       sourceAttempt.Agent,
+		Workspace:   workspace,
+		BaseStateID: current.ID,
+		Status:      "reconciling",
+		CreatedAt:   time.Now().UTC(),
+	}
+	parents := canonicalizeParents([]Parent{
+		{StateID: proposal.ID, Role: "run_parent", Order: 0},
+		{StateID: current.ID, Role: "canonical_anchor", Order: 1},
+		{StateID: proposal.ID, Role: "reconciliation_source", Order: 2},
+	})
+	prompt := State{
+		ID:                newID("p"),
+		Kind:              StatePrompt,
+		TaskID:            proposal.TaskID,
+		AttemptID:         reconciliationAttempt.ID,
+		CanonicalAnchorID: current.ID,
+		SourceTree:        conflictTree,
+		GitCommit:         commit,
+		Prompt:            instruction,
+		Summary:           summary,
+		Agent:             reconciliationAttempt.Agent,
+		CreatedAt:         time.Now().UTC(),
+		Parents:           parents,
+	}
+	prompt.Digest, err = digestState(prompt, parents)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	if err := s.pinState(ctx, prompt); err != nil {
+		return RefreshResult{}, err
+	}
+	promptPinned := true
+	defer func() {
+		if promptPinned {
+			_ = s.Repo.DeleteRef(context.Background(), "refs/hop/states/"+prompt.ID, prompt.GitCommit)
+		}
+	}()
+	if err := os.MkdirAll(filepath.Dir(workspace), 0o755); err != nil {
+		return RefreshResult{}, fmt.Errorf("create reconciliation workspace directory: %w", err)
+	}
+	if _, err := s.Repo.AddDetachedWorktree(ctx, workspace, prompt.GitCommit); err != nil {
+		_ = s.Repo.RemoveWorktree(context.Background(), workspace, true)
+		return RefreshResult{}, fmt.Errorf("create reconciliation workspace: %w", err)
+	}
+	workspaceInstalled := true
+	defer func() {
+		if workspaceInstalled {
+			_ = s.Repo.RemoveWorktree(context.Background(), workspace, true)
+		}
+	}()
+	reconciliationAttempt, prompt, err = s.Store.CreateAttemptPrompt(ctx, reconciliationAttempt, prompt, parents)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	workspaceInstalled = false
+	promptPinned = false
+	task.Status = "reconciling"
+	return s.reconciliationResult(ctx, prompt, task, proposal, current, false)
+}
+
+func (s *Service) reconciliationResult(
+	ctx context.Context,
+	prompt State,
+	task Task,
+	proposal State,
+	current State,
+	reused bool,
+) (RefreshResult, error) {
+	conflicts, ok := decodeReconciliationConflicts(prompt.Summary)
+	if !ok || len(conflicts) == 0 {
+		return RefreshResult{}, fmt.Errorf("reconciliation prompt %s has no conflict metadata", prompt.ID)
+	}
+	attempt, err := s.Store.GetAttempt(ctx, prompt.AttemptID)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	if _, err := OpenRepository(attempt.Workspace); err != nil {
+		return RefreshResult{}, fmt.Errorf("open prepared reconciliation workspace: %w", err)
+	}
+	task, err = s.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	return RefreshResult{
+		Prompt:       prompt,
+		Task:         task,
+		Attempt:      attempt,
+		Proposal:     proposal,
+		AcceptedHead: current,
+		Workspace:    attempt.Workspace,
+		Deliver:      s.deliveryEnvironment(prompt, attempt),
+		ConflictTree: prompt.SourceTree,
+		Conflicts:    conflicts,
+		Reused:       reused,
+	}, nil
+}
+
+func encodeReconciliationConflicts(paths []string) (string, error) {
+	encoded, err := json.Marshal(paths)
+	if err != nil {
+		return "", fmt.Errorf("encode reconciliation conflicts: %w", err)
+	}
+	return reconciliationSummaryPrefix + string(encoded), nil
+}
+
+func decodeReconciliationConflicts(summary string) ([]string, bool) {
+	if !strings.HasPrefix(summary, reconciliationSummaryPrefix) {
+		return nil, false
+	}
+	var paths []string
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(summary, reconciliationSummaryPrefix)), &paths); err != nil {
+		return nil, false
+	}
+	return paths, true
+}
+
+func unresolvedReconciliationMarkers(ctx context.Context, repo *Repository, tree string, conflicts []string) ([]string, error) {
+	args := []string{
+		"grep", "-z", "-l", "-I",
+		"-e", "^<<<<<<< ",
+		"-e", "^>>>>>>> ",
+		tree, "--",
+	}
+	args = append(args, conflicts...)
+	output, err := repo.run(ctx, []string{"GIT_LITERAL_PATHSPECS=1", "GIT_OPTIONAL_LOCKS=0"}, nil, args...)
+	if err != nil {
+		if gitExitCode(err) == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("inspect reconciliation markers: %w", err)
+	}
+	unresolved := splitNull([]byte(output))
+	sort.Strings(unresolved)
+	return unresolved, nil
 }
 
 func (s *Service) syncLocked(ctx context.Context) (SyncResult, error) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +79,171 @@ func TestInitRefusesAUserTrackedHopDirectory(t *testing.T) {
 	contents, readErr := os.ReadFile(filepath.Join(root, ".hop", "user-owned.txt"))
 	if readErr != nil || string(contents) != "do not overwrite\n" {
 		t.Fatalf("tracked .hop content changed: %q, %v", string(contents), readErr)
+	}
+}
+
+func TestConcurrentFirstBeginsInitializeExactlyOnce(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	type result struct {
+		code   int
+		stdout string
+		stderr string
+	}
+	const workers = 8
+	start := make(chan struct{})
+	results := make(chan result, workers)
+	var group sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			<-start
+			var stdout, stderr bytes.Buffer
+			code := RunCLI([]string{
+				"begin", "--json", "--agent", fmt.Sprintf("agent-%d", index),
+				"--session", fmt.Sprintf("session-%d", index), fmt.Sprintf("Prompt %d", index),
+			}, &stdout, &stderr)
+			results <- result{code: code, stdout: stdout.String(), stderr: stderr.String()}
+		}(index)
+	}
+	close(start)
+	group.Wait()
+	close(results)
+
+	var workspaces []string
+	for result := range results {
+		if result.code != 0 {
+			t.Fatalf("concurrent first begin exited %d\nstdout: %s\nstderr: %s", result.code, result.stdout, result.stderr)
+		}
+		var response map[string]any
+		if err := json.Unmarshal([]byte(result.stdout), &response); err != nil {
+			t.Fatalf("decode concurrent begin output %q: %v", result.stdout, err)
+		}
+		data := objectField(t, response, "data")
+		workspaces = append(workspaces, stringField(t, data, "workspace"))
+	}
+	for _, workspace := range workspaces {
+		if info, err := os.Stat(workspace); err != nil || !info.IsDir() {
+			t.Fatalf("concurrent begin workspace %q missing: %v", workspace, err)
+		}
+	}
+
+	service, err := OpenProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	graph, err := service.Store.Graph(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialAccepted := 0
+	prompts := 0
+	for _, row := range graph {
+		if row.State.Kind == StateAccepted && row.State.TaskID == "" {
+			initialAccepted++
+		}
+		if row.State.Kind == StatePrompt {
+			prompts++
+		}
+	}
+	if initialAccepted != 1 || prompts != workers {
+		t.Fatalf("concurrent bootstrap created %d initial states and %d prompts, want 1 and %d", initialAccepted, prompts, workers)
+	}
+}
+
+func TestConcurrentInitInExistingGitRepository(t *testing.T) {
+	root := t.TempDir()
+	runGitTest(t, root, "init", "--quiet")
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+
+	const workers = 8
+	start := make(chan struct{})
+	type result struct {
+		stateID string
+		err     error
+	}
+	results := make(chan result, workers)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			service, initial, err := InitProject(context.Background(), root)
+			if service != nil {
+				_ = service.Close()
+			}
+			results <- result{stateID: initial.ID, err: err}
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+
+	initialID := ""
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent existing-repository init: %v", result.err)
+		}
+		if initialID == "" {
+			initialID = result.stateID
+		} else if result.stateID != initialID {
+			t.Fatalf("concurrent init returned initial states %s and %s", initialID, result.stateID)
+		}
+	}
+	exclude, err := os.ReadFile(filepath.Join(root, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(exclude), ".hop/\n"); count != 1 {
+		t.Fatalf("concurrent initialization wrote .hop/ exclusion %d times", count)
+	}
+}
+
+func TestOpenProjectWaitsForInitializationLock(t *testing.T) {
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	root := service.Root
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	release, err := acquireProjectLock(context.Background(), root, "init")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := make(chan error, 1)
+	go func() {
+		project, openErr := OpenProject(root)
+		if openErr == nil {
+			openErr = project.Close()
+		}
+		opened <- openErr
+	}()
+	select {
+	case err := <-opened:
+		release()
+		t.Fatalf("OpenProject returned before initialization lock release: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-opened:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OpenProject did not resume after initialization lock release")
 	}
 }
 
@@ -219,6 +385,76 @@ func TestDoctorRejectsCommitTreeAndDigestMismatch(t *testing.T) {
 	joined := strings.Join(report.Problems, "\n")
 	if !strings.Contains(joined, "records tree") || !strings.Contains(joined, "digest mismatch") {
 		t.Fatalf("doctor problems did not explain both mismatches: %s", joined)
+	}
+}
+
+func TestCLILandConflictReturnsAutomaticReconciliation(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.txt": "base\n"})
+	first, err := service.CreatePrompt(ctx, "First", "", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreatePrompt(ctx, "Second", "", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(first.Workspace, "shared.txt"), "first\n")
+	writeTestFile(t, filepath.Join(second.Workspace, "shared.txt"), "second\n")
+	firstProposal, err := service.Propose(ctx, first.Prompt.ID, "First")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProposal, err := service.Propose(ctx, second.Prompt.ID, "Second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, firstProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	root := service.Root
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	var stdout, stderr bytes.Buffer
+	code := RunCLI([]string{"land", secondProposal.Proposal.ID, "--json"}, &stdout, &stderr)
+	if code != 20 {
+		t.Fatalf("land exit = %d, want 20\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["next_command"] == nil {
+		t.Fatalf("conflict response omitted next command: %s", stdout.String())
+	}
+	reconciliation := objectField(t, response, "reconciliation")
+	prompt := objectField(t, reconciliation, "prompt")
+	if stringField(t, prompt, "id") == "" || stringField(t, reconciliation, "workspace") == "" {
+		t.Fatalf("reconciliation response omitted prompt/workspace: %s", stdout.String())
+	}
+	if status := stringField(t, objectField(t, reconciliation, "task"), "status"); status != "reconciling" {
+		t.Fatalf("reconciliation task status = %q, want reconciling", status)
+	}
+	if status := stringField(t, objectField(t, reconciliation, "attempt"), "status"); status != "reconciling" {
+		t.Fatalf("reconciliation attempt status = %q, want reconciling", status)
+	}
+	conflicts, ok := reconciliation["conflicts"].([]any)
+	if !ok || len(conflicts) != 1 || conflicts[0] != "shared.txt" {
+		t.Fatalf("conflicts = %#v", reconciliation["conflicts"])
+	}
+	if contents, err := os.ReadFile(filepath.Join(root, "shared.txt")); err != nil || string(contents) != "first\n" {
+		t.Fatalf("conflicted land changed visible root: %q, %v", string(contents), err)
 	}
 }
 
@@ -476,6 +712,332 @@ func TestConcurrentDisjointAcceptancesSerialize(t *testing.T) {
 	}
 	if len(history) != 3 {
 		t.Fatalf("canonical history has %d states, want initial plus two acceptances", len(history))
+	}
+}
+
+func TestOverlappingSameFileIndependentHunksAutoMerge(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{
+		"shared.txt": "header\nmiddle\nfooter\n",
+	})
+	first, err := service.CreatePrompt(ctx, "Change header", "", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreatePrompt(ctx, "Change footer", "", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(first.Workspace, "shared.txt"), "HEADER\nmiddle\nfooter\n")
+	writeTestFile(t, filepath.Join(second.Workspace, "shared.txt"), "header\nmiddle\nFOOTER\n")
+	firstProposal, err := service.Propose(ctx, first.Prompt.ID, "Header")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProposal, err := service.Propose(ctx, second.Prompt.ID, "Footer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Accept(ctx, firstProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := service.Accept(ctx, secondProposal.Proposal.ID, []string{
+		"sh", "-c", `grep -qx HEADER shared.txt && grep -qx FOOTER shared.txt`,
+	})
+	if err != nil {
+		var failed *CheckFailedError
+		if errors.As(err, &failed) {
+			contents, showErr := service.Repo.run(ctx, nil, nil, "show", failed.Check.TreeHash+":shared.txt")
+			t.Fatalf("mergeable same-file proposal failed validation with shared.txt=%q (show error %v): %v", contents, showErr, err)
+		}
+		t.Fatalf("mergeable same-file proposal was blocked: %v", err)
+	}
+	assertTreeFiles(t, service, merged.State.GitCommit, map[string]string{
+		"shared.txt": "HEADER\nmiddle\nFOOTER\n",
+	})
+	if len(merged.ProposalPaths) != 1 || len(merged.CurrentPaths) != 1 ||
+		merged.ProposalPaths[0] != "shared.txt" || merged.CurrentPaths[0] != "shared.txt" {
+		t.Fatalf("overlap audit paths were not retained: proposal=%v current=%v", merged.ProposalPaths, merged.CurrentPaths)
+	}
+}
+
+func TestSnapshotCapturesRacySameSizeRewrite(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.txt": "lower\n"})
+	runGitTest(t, service.Root, "config", "core.trustctime", "false")
+	runGitTest(t, service.Root, "config", "core.checkStat", "minimal")
+	prompt, err := service.CreatePrompt(ctx, "Uppercase the value", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(prompt.Workspace, "shared.txt")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, path, "UPPER\n")
+	if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := service.Propose(ctx, prompt.Prompt.ID, "Uppercase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTreeFiles(t, service, proposal.Proposal.GitCommit, map[string]string{"shared.txt": "UPPER\n"})
+}
+
+func TestSameAttemptFollowupCoalescesAlreadyAcceptedEdit(t *testing.T) {
+	ctx := context.Background()
+	service, initial := newTestProject(t, map[string]string{
+		"hop-home.css": "body { color: black; }\n",
+		"footer.html":  `<link rel="stylesheet" href="/css/hop-home.css?v=2">` + "\n",
+	})
+	first, err := service.CreatePrompt(ctx, "Add the primary color", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(first.Workspace, "hop-home.css"), "body { color: black; }\n:root { --color-primary: #724bdb; }\n")
+	firstProposal, err := service.Propose(ctx, first.Prompt.ID, "Add primary color")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, firstProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	followup, err := service.CreatePrompt(ctx, "Bust the stylesheet cache", firstProposal.Proposal.ID, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(followup.Workspace, "footer.html"), `<link rel="stylesheet" href="/css/hop-home.css?v=3">`+"\n")
+	secondProposal, err := service.Propose(ctx, followup.Prompt.ID, "Bump stylesheet cache key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondProposal.Proposal.CanonicalAnchorID != initial.ID {
+		t.Fatalf("test no longer exercises stale attempt base: proposal anchor = %s, want %s", secondProposal.Proposal.CanonicalAnchorID, initial.ID)
+	}
+	landed, err := service.Land(ctx, secondProposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatalf("same-attempt follow-up was blocked: %v", err)
+	}
+	assertTreeFiles(t, service, landed.State.GitCommit, map[string]string{
+		"hop-home.css": "body { color: black; }\n:root { --color-primary: #724bdb; }\n",
+		"footer.html":  `<link rel="stylesheet" href="/css/hop-home.css?v=3">` + "\n",
+	})
+}
+
+func TestIdenticalSameFileChangesCoalesceAutomatically(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.css": "body {}\n"})
+	first, err := service.CreatePrompt(ctx, "Add primary color", "", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreatePrompt(ctx, "Add the same primary color", "", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "body {}\n:root { --primary: purple; }\n"
+	writeTestFile(t, filepath.Join(first.Workspace, "shared.css"), want)
+	writeTestFile(t, filepath.Join(second.Workspace, "shared.css"), want)
+	firstProposal, err := service.Propose(ctx, first.Prompt.ID, "Primary color")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProposal, err := service.Propose(ctx, second.Prompt.ID, "Same primary color")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Accept(ctx, firstProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	secondAccepted, err := service.Accept(ctx, secondProposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatalf("identical same-file change was blocked: %v", err)
+	}
+	assertTreeFiles(t, service, secondAccepted.State.GitCommit, map[string]string{"shared.css": want})
+}
+
+func TestConcurrentSameFileCompatibleAcceptancesSerializeAndMerge(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.txt": "one\ntwo\nthree\n"})
+	first, err := service.CreatePrompt(ctx, "Uppercase one", "", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreatePrompt(ctx, "Uppercase three", "", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(first.Workspace, "shared.txt"), "ONE\ntwo\nthree\n")
+	writeTestFile(t, filepath.Join(second.Workspace, "shared.txt"), "one\ntwo\nTHREE\n")
+	firstProposal, err := service.Propose(ctx, first.Prompt.ID, "One")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProposal, err := service.Propose(ctx, second.Prompt.ID, "Three")
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, proposalID := range []string{firstProposal.Proposal.ID, secondProposal.Proposal.ID} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, acceptErr := service.Accept(ctx, proposalID, nil)
+			errs <- acceptErr
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent compatible acceptance: %v", err)
+		}
+	}
+	head, err := service.Store.AcceptedHead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTreeFiles(t, service, head.GitCommit, map[string]string{
+		"shared.txt": "ONE\ntwo\nTHREE\n",
+	})
+}
+
+func TestTrueConflictCreatesAgentReconciliationWorkspace(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.txt": "color=base\n"})
+	first, err := service.CreatePrompt(ctx, "Use red", "", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreatePrompt(ctx, "Use blue with fallback", "", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(first.Workspace, "shared.txt"), "color=red\n")
+	writeTestFile(t, filepath.Join(second.Workspace, "shared.txt"), "color=blue\n")
+	firstProposal, err := service.Propose(ctx, first.Prompt.ID, "Red")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProposal, err := service.Propose(ctx, second.Prompt.ID, "Blue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, firstProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Land(ctx, secondProposal.Proposal.ID, nil)
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("land error = %v, want ConflictError", err)
+	}
+	refresh, err := service.Refresh(ctx, secondProposal.Proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refresh.Task.ID != second.Task.ID {
+		t.Fatalf("reconciliation escaped original task: %#v", refresh)
+	}
+	if refresh.Attempt.ID == second.Attempt.ID || refresh.Attempt.BaseStateID != refresh.AcceptedHead.ID {
+		t.Fatalf("reconciliation did not receive a fresh attempt at the accepted head: %#v", refresh.Attempt)
+	}
+	if len(refresh.Conflicts) != 1 || refresh.Conflicts[0] != "shared.txt" {
+		t.Fatalf("conflicts = %#v", refresh.Conflicts)
+	}
+	contents, err := os.ReadFile(filepath.Join(refresh.Workspace, "shared.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(contents, []byte("<<<<<<< ")) ||
+		!bytes.Contains(contents, []byte("=======")) ||
+		!bytes.Contains(contents, []byte(">>>>>>> ")) {
+		t.Fatalf("reconciliation workspace lacks useful diff3 markers:\n%s", contents)
+	}
+	if _, err := service.Propose(ctx, refresh.Prompt.ID, "Unresolved"); err == nil || !strings.Contains(err.Error(), "merge markers") {
+		t.Fatalf("unresolved proposal error = %v", err)
+	}
+	writeTestFile(t, filepath.Join(refresh.Workspace, "shared.txt"), "color=red-blue-fallback\n")
+	if _, err := service.Propose(ctx, refresh.Prompt.ID, "Unchecked resolution"); err == nil || !strings.Contains(err.Error(), "must pass hop check") {
+		t.Fatalf("unchecked reconciliation proposal error = %v", err)
+	}
+	if _, err := service.RunCheck(ctx, refresh.Prompt.ID, []string{
+		"sh", "-c", `test "$(cat shared.txt)" = "color=red-blue-fallback"`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolvedProposal, err := service.Propose(ctx, refresh.Prompt.ID, "Resolve both color intents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := service.Land(ctx, resolvedProposal.Proposal.ID, []string{
+		"sh", "-c", `test "$(cat shared.txt)" = "color=red-blue-fallback"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "shared.txt")); err != nil || string(contents) != "color=red-blue-fallback\n" {
+		t.Fatalf("visible resolution = %q, err=%v", string(contents), err)
+	}
+	if resolved.MaterializedRoot != service.Root {
+		t.Fatalf("resolved root = %q", resolved.MaterializedRoot)
+	}
+}
+
+func TestMarkerlessModifyDeleteConflictRequiresCheckedResolution(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.txt": "base\n"})
+	modify, err := service.CreatePrompt(ctx, "Modify the shared file", "", "modifier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove, err := service.CreatePrompt(ctx, "Remove the shared file", "", "remover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(modify.Workspace, "shared.txt"), "accepted modification\n")
+	if err := os.Remove(filepath.Join(remove.Workspace, "shared.txt")); err != nil {
+		t.Fatal(err)
+	}
+	modifyProposal, err := service.Propose(ctx, modify.Prompt.ID, "Modify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeProposal, err := service.Propose(ctx, remove.Prompt.ID, "Remove")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, modifyProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, removeProposal.Proposal.ID, nil); err == nil {
+		t.Fatal("modify/delete proposal unexpectedly landed without reconciliation")
+	}
+	refresh, err := service.Refresh(ctx, removeProposal.Proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Propose(ctx, refresh.Prompt.ID, "Unchecked structural resolution"); err == nil || !strings.Contains(err.Error(), "must pass hop check") {
+		t.Fatalf("unchecked markerless reconciliation error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(refresh.Workspace, "shared.txt")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if _, err := service.RunCheck(ctx, refresh.Prompt.ID, []string{"sh", "-c", "test ! -e shared.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	resolvedProposal, err := service.Propose(ctx, refresh.Prompt.ID, "Intentionally remove shared file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, resolvedProposal.Proposal.ID, []string{"sh", "-c", "test ! -e shared.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(service.Root, "shared.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resolved visible root retained deleted file: %v", err)
 	}
 }
 

@@ -131,7 +131,7 @@ func (s *GitStore) Ensure(ctx context.Context, path string) (*Repository, error)
 
 	if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
 		if root, findErr := s.FindRoot(ctx, filepath.Dir(path)); findErr == nil {
-			return s.openRoot(ctx, root, true)
+			return s.openRootForEnsure(ctx, root)
 		}
 		return nil, fmt.Errorf("cannot initialize a repository at non-directory %q", path)
 	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
@@ -139,16 +139,44 @@ func (s *GitStore) Ensure(ctx context.Context, path string) (*Repository, error)
 	}
 
 	if root, findErr := s.FindRoot(ctx, path); findErr == nil {
-		return s.openRoot(ctx, root, true)
+		return s.openRootForEnsure(ctx, root)
 	}
 
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return nil, fmt.Errorf("create repository directory: %w", err)
 	}
+	lockPath, err := repositoryInitLockPath(path)
+	if err != nil {
+		return nil, err
+	}
+	release, err := acquireFileLock(ctx, lockPath, "Hop repository initialization")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	// A concurrent Hop process may have initialized this directory while this
+	// process waited for the per-user bootstrap lock.
+	if root, findErr := s.FindRoot(ctx, path); findErr == nil {
+		return s.openRoot(ctx, root, true)
+	}
 	if _, err := s.run(ctx, path, nil, nil, "init", "--quiet", path); err != nil {
 		return nil, err
 	}
 	return s.openRoot(ctx, path, true)
+}
+
+func (s *GitStore) openRootForEnsure(ctx context.Context, root string) (*Repository, error) {
+	lockPath, err := repositoryInitLockPath(root)
+	if err != nil {
+		return nil, err
+	}
+	release, err := acquireFileLock(ctx, lockPath, "Hop repository initialization")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return s.openRoot(ctx, root, true)
 }
 
 // Open opens the non-bare repository containing path.
@@ -292,6 +320,15 @@ func (r *Repository) SnapshotWithOptions(ctx context.Context, options SnapshotOp
 	env := []string{"GIT_INDEX_FILE=" + indexPath, "GIT_OPTIONAL_LOCKS=0"}
 	if _, err := r.run(ctx, env, nil, "add", "-A", "--", "."); err != nil {
 		return "", "", fmt.Errorf("snapshot workspace: %w", err)
+	}
+	// The disposable index is copied from the worktree index and therefore
+	// carries its stat cache. An agent can rewrite a file to the same size within
+	// the filesystem timestamp granularity, making a plain `git add -A`
+	// intermittently treat fresh content as unchanged. Renormalizing forces Git
+	// to hash every tracked path again while retaining additions/deletions staged
+	// by the first pass.
+	if _, err := r.run(ctx, env, nil, "add", "--renormalize", "--", "."); err != nil {
+		return "", "", fmt.Errorf("rehash workspace snapshot: %w", err)
 	}
 	treeOutput, err := r.run(ctx, env, nil, "write-tree")
 	if err != nil {
@@ -880,55 +917,85 @@ func (r *Repository) TrackedPaths(ctx context.Context, path string) ([]string, e
 	return paths, nil
 }
 
-// ComposeTrees conservatively composes the changes base->theirs onto ours.
-// It uses Git's three-tree index merge, so a path independently changed to
-// different content is reported as a conflict instead of being rewritten. No
-// worktree or user index is read or changed. On conflict, tree is empty and the
-// sorted conflicting path set is returned with a nil error.
+// ComposeTrees performs Git's real three-way merge without touching a
+// worktree or index. Independent hunks in the same file, identical changes,
+// renames, and compatible mode/content changes merge automatically. On a
+// genuine conflict, tree is the best-effort conflict-marker tree and conflicts
+// lists the paths an agent must reconcile.
 func (r *Repository) ComposeTrees(ctx context.Context, base, ours, theirs string) (tree string, conflicts []string, err error) {
-	baseTree, err := r.resolveTree(ctx, base)
+	baseCommit, err := r.resolveCommit(ctx, base)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve base tree: %w", err)
+		return "", nil, fmt.Errorf("resolve base commit: %w", err)
 	}
-	oursTree, err := r.resolveTree(ctx, ours)
+	oursCommit, err := r.resolveCommit(ctx, ours)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve current tree: %w", err)
+		return "", nil, fmt.Errorf("resolve current commit: %w", err)
 	}
-	theirsTree, err := r.resolveTree(ctx, theirs)
+	theirsCommit, err := r.resolveCommit(ctx, theirs)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve proposal tree: %w", err)
+		return "", nil, fmt.Errorf("resolve proposal commit: %w", err)
 	}
 
-	indexPath, cleanup, err := r.temporaryIndex(false)
-	if err != nil {
-		return "", nil, err
+	output, mergeErr := r.run(ctx, []string{"GIT_OPTIONAL_LOCKS=0"}, nil,
+		"-c", "merge.conflictStyle=zdiff3",
+		"-c", "merge.renames=true",
+		"-c", "merge.directoryRenames=conflict",
+		"merge-tree", "--write-tree", "--merge-base", baseCommit,
+		"--name-only", "-z", "--no-messages", oursCommit, theirsCommit,
+	)
+	fields := splitNull([]byte(output))
+	if len(fields) == 0 || fields[0] == "" {
+		if mergeErr != nil {
+			return "", nil, fmt.Errorf("compose trees: %w", mergeErr)
+		}
+		return "", nil, errors.New("git merge-tree returned no tree")
 	}
-	defer cleanup()
-	env := []string{"GIT_INDEX_FILE=" + indexPath, "GIT_OPTIONAL_LOCKS=0"}
-	// --aggressive resolves only additional provably-trivial cases (for example,
-	// a deletion on one side while the other side is unchanged). It does not
-	// attempt a content merge of independently modified files.
-	_, mergeErr := r.run(ctx, env, nil, "read-tree", "-m", "--aggressive", baseTree, oursTree, theirsTree)
-
-	unmergedOutput, listErr := r.run(ctx, env, nil, "ls-files", "-u", "-z")
-	if listErr == nil {
-		conflicts = parseUnmergedPaths([]byte(unmergedOutput))
+	tree = fields[0]
+	if err := validObjectName(tree); err != nil {
+		return "", nil, fmt.Errorf("invalid composed tree: %w", err)
 	}
-	if len(conflicts) > 0 {
-		return "", conflicts, nil
+	conflictSet := map[string]struct{}{}
+	for _, path := range fields[1:] {
+		if path != "" {
+			conflictSet[path] = struct{}{}
+		}
 	}
-	if mergeErr != nil {
+	for path := range conflictSet {
+		conflicts = append(conflicts, path)
+	}
+	sort.Strings(conflicts)
+	if mergeErr == nil {
+		if len(conflicts) > 0 {
+			return "", nil, errors.New("git merge-tree reported conflict paths with a successful exit")
+		}
+		return tree, nil, nil
+	}
+	if gitExitCode(mergeErr) != 1 {
 		return "", nil, fmt.Errorf("compose trees: %w", mergeErr)
 	}
-	if listErr != nil {
-		return "", nil, fmt.Errorf("inspect composed index: %w", listErr)
+	if len(conflicts) == 0 {
+		// Git documents conflict classes (notably some directory-renames) that
+		// produce no conflicted-file list. Give the agent the changed-path union
+		// as useful reconciliation candidates instead of converting a real merge
+		// conflict into an internal error.
+		for _, side := range []string{oursCommit, theirsCommit} {
+			paths, pathsErr := r.ChangedPaths(ctx, baseCommit, side)
+			if pathsErr != nil {
+				return "", nil, fmt.Errorf("derive structural conflict paths: %w", pathsErr)
+			}
+			for _, path := range paths {
+				conflictSet[path] = struct{}{}
+			}
+		}
+		for path := range conflictSet {
+			conflicts = append(conflicts, path)
+		}
+		sort.Strings(conflicts)
+		if len(conflicts) == 0 {
+			conflicts = []string{"(structural merge conflict; inspect both inputs)"}
+		}
 	}
-
-	treeOutput, err := r.run(ctx, env, nil, "write-tree")
-	if err != nil {
-		return "", nil, fmt.Errorf("write composed tree: %w", err)
-	}
-	return trimLine(treeOutput), nil, nil
+	return tree, conflicts, nil
 }
 
 // VerifyObject verifies that name resolves to an object in this repository.
@@ -998,6 +1065,17 @@ func (r *Repository) resolveTree(ctx context.Context, object string) (string, er
 	output, err := r.run(ctx, nil, nil, "rev-parse", "--verify", "--quiet", object+"^{tree}")
 	if err != nil {
 		return "", fmt.Errorf("resolve tree %s: %w", object, err)
+	}
+	return trimLine(output), nil
+}
+
+func (r *Repository) resolveCommit(ctx context.Context, object string) (string, error) {
+	if err := validObjectName(object); err != nil {
+		return "", err
+	}
+	output, err := r.run(ctx, nil, nil, "rev-parse", "--verify", "--quiet", object+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve commit %s: %w", object, err)
 	}
 	return trimLine(output), nil
 }

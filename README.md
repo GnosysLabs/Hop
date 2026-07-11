@@ -27,8 +27,8 @@ This repository contains the first local alpha kernel. It supports:
 - Isolated detached worktrees per attempt
 - Immutable checkpoints and proposals
 - Checks bound to exact source trees
-- Conservative path-level conflict detection
-- Three-tree composition of disjoint proposals
+- Real three-way content merging, including compatible same-file edits
+- Agent-ready reconciliation workspaces for genuine merge conflicts
 - Optional validation on the final integrated tree
 - Compare-and-swap acceptance
 - Safe visible-root materialization on Desktop landing
@@ -64,7 +64,7 @@ The user continues typing into Codex Desktop normally. The skill invokes `hop be
 
 ## Build
 
-Requires Go 1.26+ and Git.
+Requires Go 1.26+ and Git 2.40+.
 
 ```bash
 go build -o hop ./cmd/hop
@@ -105,7 +105,7 @@ hop propose --summary "Added password reset emails" P_...
 hop land R_... -- go test ./...
 ```
 
-The command supplied to `land` runs in a temporary worktree containing the exact final tree that would become accepted. If it fails, `refs/hop/accepted` and the SQLite accepted head do not move. After acceptance, Hop updates only the visible working files through a disposable Git index; HEAD, the active branch, and the real index do not move. The agent pauses for an explicit review-first request, failed validation, proposal overlap, visible-root divergence, or newly required destructive/external scope.
+The command supplied to `land` runs in a temporary worktree containing the exact final tree that would become accepted. If it fails, `refs/hop/accepted` and the SQLite accepted head do not move. After acceptance, Hop updates only the visible working files through a disposable Git index; HEAD, the active branch, and the real index do not move. Compatible edits to the same file are merged automatically. A genuine merge conflict becomes a fresh agent reconciliation workspace, which the skill resolves, checks, and lands without asking the user to manage source-control mechanics. The agent pauses only for an explicit review-first request, failed validation, visible-root divergence, unresolved product intent, or newly required destructive/external scope.
 
 `land` and `accept` are intentionally different:
 
@@ -162,9 +162,15 @@ hop start --agent codex "Add a health endpoint"
 hop start --agent claude "Add an account empty state"
 ```
 
-If their changed paths are disjoint, both proposals can land in either order. The second proposal is composed onto the latest accepted tree and may be validated there.
+If their changed paths are disjoint, both proposals can land in either order. The second proposal is composed onto the latest accepted tree and validated there.
 
-If both proposals changed the same path since their shared base, Hop blocks the stale proposal even when Git could textually merge it. The proposal remains addressable for review or a future reconciliation prompt.
+If both proposals changed the same file, Hop performs a real three-way merge.
+Independent hunks and identical changes land automatically. Only genuine merge
+conflicts pause acceptance; `hop land` prepares a fresh reconciliation
+workspace and the agent resolves, retests, reproposes, and lands it
+automatically. Text conflicts use diff3 markers; structural and binary
+conflicts may not. The visible project root remains at the last accepted state
+until that resolution passes.
 
 ## State model
 
@@ -217,7 +223,11 @@ The JSON shape is an alpha contract and may evolve before the first tagged relea
 
 ## Safety boundary
 
-Hop currently treats any shared changed path as a conflict. Disjoint files can still conflict behaviorally, so automatic acceptance reruns the strongest relevant validation on the exact final tree. Manual acceptance remains available as an explicit review-first mode.
+Hop uses Git's three-way content merge rather than treating shared paths as
+conflicts. Textual cleanliness still cannot prove behavioral compatibility, so
+automatic acceptance reruns the strongest relevant validation on the exact
+final tree. Manual acceptance remains available as an explicit review-first
+mode.
 
 Desktop landing fails closed when nonignored visible source does not exactly match an accepted Hop state or when an ignored/untracked path would be overwritten. It never uses `reset --hard`, moves HEAD, or rewrites the user's real index. The lower-level `hop accept` command deliberately retains controller-only behavior and does not update the visible root.
 

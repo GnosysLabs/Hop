@@ -559,6 +559,126 @@ func (s *Store) CreateTaskAttemptPrompt(
 	return task, attempt, prompt, nil
 }
 
+// CreateAttemptPrompt atomically adds a new attempt and its initial prompt to
+// an existing task. Reconciliation uses a fresh workspace so a frozen proposal
+// and any concurrent work in its original attempt are never overwritten.
+func (s *Store) CreateAttemptPrompt(
+	ctx context.Context,
+	attempt Attempt,
+	prompt State,
+	parents []Parent,
+) (Attempt, State, error) {
+	now := time.Now().UTC()
+	if attempt.ID == "" {
+		attempt.ID = newID("at")
+	}
+	if attempt.TaskID == "" {
+		return Attempt{}, State{}, errors.New("hop: reconciliation attempt requires a task ID")
+	}
+	if attempt.BaseStateID == "" {
+		return Attempt{}, State{}, errors.New("hop: reconciliation attempt requires a base state")
+	}
+	if strings.TrimSpace(attempt.Workspace) == "" {
+		return Attempt{}, State{}, errors.New("hop: reconciliation attempt requires a workspace")
+	}
+	if attempt.CreatedAt.IsZero() {
+		attempt.CreatedAt = now
+	}
+	if attempt.Status == "" {
+		attempt.Status = "reconciling"
+	}
+	if prompt.ID == "" {
+		prompt.ID = newID("p")
+	}
+	if prompt.Kind == "" {
+		prompt.Kind = StatePrompt
+	}
+	if prompt.Kind != StatePrompt {
+		return Attempt{}, State{}, fmt.Errorf("hop: attempt instruction must have kind %q", StatePrompt)
+	}
+	if prompt.TaskID == "" {
+		prompt.TaskID = attempt.TaskID
+	}
+	if prompt.TaskID != attempt.TaskID {
+		return Attempt{}, State{}, errors.New("hop: prompt task does not match reconciliation attempt")
+	}
+	if prompt.AttemptID == "" {
+		prompt.AttemptID = attempt.ID
+	}
+	if prompt.AttemptID != attempt.ID {
+		return Attempt{}, State{}, errors.New("hop: prompt attempt does not match reconciliation attempt")
+	}
+	if prompt.Agent == "" {
+		prompt.Agent = attempt.Agent
+	}
+	if prompt.CreatedAt.IsZero() {
+		prompt.CreatedAt = now
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Attempt{}, State{}, fmt.Errorf("begin reconciliation attempt creation: %w", err)
+	}
+	defer tx.Rollback()
+
+	var taskExists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = ?`, attempt.TaskID).Scan(&taskExists); err != nil {
+		return Attempt{}, State{}, dbNotFound("task", attempt.TaskID, err)
+	}
+	base, err := stateTx(ctx, tx, attempt.BaseStateID)
+	if err != nil {
+		return Attempt{}, State{}, fmt.Errorf("read reconciliation base state: %w", err)
+	}
+	if prompt.CanonicalAnchorID == "" {
+		prompt.CanonicalAnchorID = attempt.BaseStateID
+	}
+	if prompt.SourceTree == "" {
+		prompt.SourceTree = base.SourceTree
+	}
+	if prompt.GitCommit == "" {
+		prompt.GitCommit = base.GitCommit
+	}
+	parents = chooseParents(prompt.Parents, parents)
+	parents = ensureParentRole(parents, "run_parent", attempt.BaseStateID)
+	parents = ensureParentRole(parents, "canonical_anchor", prompt.CanonicalAnchorID)
+	parents = canonicalizeParents(parents)
+	prompt.Parents = parents
+	attempt.HeadStateID = prompt.ID
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO attempts(id, task_id, agent, workspace, base_state_id, head_state_id, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
+		attempt.ID, attempt.TaskID, attempt.Agent, attempt.Workspace, attempt.BaseStateID,
+		attempt.Status, formatTime(attempt.CreatedAt)); err != nil {
+		return Attempt{}, State{}, fmt.Errorf("insert reconciliation attempt: %w", err)
+	}
+	if err := insertStateTx(ctx, tx, prompt, parents); err != nil {
+		return Attempt{}, State{}, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE attempts SET head_state_id = ? WHERE id = ?`, prompt.ID, attempt.ID); err != nil {
+		return Attempt{}, State{}, fmt.Errorf("install reconciliation attempt head: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET status = 'reconciling' WHERE id = ?`, attempt.TaskID); err != nil {
+		return Attempt{}, State{}, fmt.Errorf("mark task reconciling: %w", err)
+	}
+	if err := insertEventTx(ctx, tx, Event{
+		Kind: "attempt.created", TaskID: attempt.TaskID, AttemptID: attempt.ID,
+	}, map[string]string{"purpose": "reconciliation"}); err != nil {
+		return Attempt{}, State{}, err
+	}
+	if err := insertEventTx(ctx, tx, Event{
+		Kind: "prompt.created", TaskID: attempt.TaskID, AttemptID: attempt.ID, StateID: prompt.ID,
+	}, map[string]string{"purpose": "reconciliation"}); err != nil {
+		return Attempt{}, State{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Attempt{}, State{}, fmt.Errorf("commit reconciliation attempt creation: %w", err)
+	}
+	return attempt, prompt, nil
+}
+
 // AppendState atomically appends an immutable state and compare-and-swaps the
 // owning attempt's head. An empty expectedAttemptHeadID means "the head observed
 // by this transaction"; callers that already observed a head should pass it.
@@ -821,6 +941,66 @@ func (s *Store) AcceptedForProposal(ctx context.Context, proposalID string) (Sta
 	}
 	if err != nil {
 		return State{}, false, fmt.Errorf("find accepted state for proposal %s: %w", proposalID, err)
+	}
+	state, err := s.GetState(ctx, id)
+	if err != nil {
+		return State{}, false, err
+	}
+	return state, true, nil
+}
+
+// ReconciliationPrompt returns the prompt already created to reconcile a
+// proposal against a particular accepted head. The pair is unique by
+// convention and makes `hop refresh` safe to retry.
+func (s *Store) ReconciliationPrompt(ctx context.Context, proposalID, acceptedID string) (State, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT s.id
+		 FROM states s
+		 JOIN state_parents source
+		   ON source.state_id = s.id
+		  AND source.parent_state_id = ?
+		  AND source.role = 'reconciliation_source'
+		 JOIN state_parents anchor
+		   ON anchor.state_id = s.id
+		  AND anchor.parent_state_id = ?
+		  AND anchor.role = 'canonical_anchor'
+		 WHERE s.kind = 'prompt'
+		 ORDER BY s.created_at DESC, s.id DESC
+		 LIMIT 1`, proposalID, acceptedID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, false, nil
+	}
+	if err != nil {
+		return State{}, false, fmt.Errorf("find reconciliation prompt: %w", err)
+	}
+	state, err := s.GetState(ctx, id)
+	if err != nil {
+		return State{}, false, err
+	}
+	return state, true, nil
+}
+
+// ReconciliationPromptForAttempt identifies attempts created specifically to
+// resolve a prior proposal. It lets proposal creation enforce reconciliation
+// evidence even when the caller names a later checkpoint instead of the
+// attempt's initial prompt.
+func (s *Store) ReconciliationPromptForAttempt(ctx context.Context, attemptID string) (State, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT s.id
+		 FROM states s
+		 JOIN state_parents source
+		   ON source.state_id = s.id
+		  AND source.role = 'reconciliation_source'
+		 WHERE s.attempt_id = ? AND s.kind = 'prompt'
+		 ORDER BY s.created_at, s.id
+		 LIMIT 1`, attemptID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, false, nil
+	}
+	if err != nil {
+		return State{}, false, fmt.Errorf("find reconciliation prompt for attempt %s: %w", attemptID, err)
 	}
 	state, err := s.GetState(ctx, id)
 	if err != nil {

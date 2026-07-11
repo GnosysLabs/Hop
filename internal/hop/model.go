@@ -96,6 +96,19 @@ type SyncResult struct {
 	Changed   bool   `json:"changed"`
 }
 
+type RefreshResult struct {
+	Prompt       State    `json:"prompt"`
+	Task         Task     `json:"task"`
+	Attempt      Attempt  `json:"attempt"`
+	Proposal     State    `json:"proposal"`
+	AcceptedHead State    `json:"accepted_head"`
+	Workspace    string   `json:"workspace"`
+	Deliver      []string `json:"deliver"`
+	ConflictTree string   `json:"conflict_tree"`
+	Conflicts    []string `json:"conflicts"`
+	Reused       bool     `json:"reused"`
+}
+
 type PromptRedaction struct {
 	Kind  string `json:"kind"`
 	Count int    `json:"count"`
@@ -170,11 +183,11 @@ func (e *CommittedStateError) Error() string {
 func (e *CommittedStateError) Unwrap() error { return e.Err }
 
 type ConflictError struct {
-	Paths []string
+	Paths []string `json:"paths"`
 }
 
 func (e *ConflictError) Error() string {
-	return "proposal overlaps changes accepted since its canonical anchor"
+	return "automatic three-way merge has genuine unresolved conflicts"
 }
 
 type RootConflictError struct {

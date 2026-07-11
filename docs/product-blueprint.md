@@ -195,9 +195,14 @@ Hop should distinguish several kinds of interaction:
 
 Non-overlapping files are not sufficient evidence of compatibility. Database migrations, API callers and implementations, dependency upgrades, generated outputs, and shared invariants often conflict across files.
 
-“Semantic merge” should not initially mean that a model silently rewrites conflicting code. The safer operation is **refresh**:
+“Semantic merge” should not mean blindly rewriting conflicting code. Hop first
+uses deterministic Git three-way merging. When genuine hunks remain, the agent
+automatically enters a provenance-linked **refresh** workspace:
 
-> Give the original agent the newer accepted state, the intervening task summaries, the conflict packet, and its original intent; ask it to produce a new proposal.
+> Give the original agent the newer accepted state, the intervening task
+> summaries, the conflict-marker tree, and its original intent; require it to
+> resolve, validate, repropose, and land without asking the human to coordinate
+> an ordinary code merge.
 
 For many agent tasks, replaying or regenerating against the latest state is cheaper and safer than preserving every old hunk.
 

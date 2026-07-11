@@ -53,7 +53,9 @@ variable or secret-manager name instead.
 - Do not stage files. Hop captures every nonignored workspace change.
 - Give a subagent project-changing work only after creating a distinct Hop
   prompt/attempt for that delegation.
-- Never silently merge overlapping proposals.
+- Never discard either side of concurrent work. Let Hop perform its three-way
+  merge, then resolve only the genuine conflict hunks in the reconciliation
+  workspace it returns.
 
 Verify the captured state before making changes:
 
@@ -79,14 +81,31 @@ hop status --json
    hop propose --summary "<behavioral summary>" <HOP_STATE_ID>
    ```
 
-6. Unless the user explicitly requested review-only mode, immediately accept
-   the proposal and validate the exact final tree:
+6. Unless the user explicitly requested review-only mode, immediately land the
+   proposal and validate the exact final tree:
 
    ```bash
    hop land <proposal-state> -- <final-test-command> [args...]
    ```
 
-7. Report the accepted result, validation, and remaining risks. Keep internal
+   Same-file edits with compatible hunks merge automatically.
+
+7. If `hop land` reports a prepared reconciliation prompt/workspace, continue
+   immediately in that returned workspace. Do not stop or ask the user to
+   coordinate an ordinary code conflict:
+
+   - adopt every returned `HOP_*` value and the fresh reconciliation workspace;
+   - inspect every conflict candidate plus both returned proposal/current
+     accepted states; compare their commits when a delete/rename, binary, mode,
+     symlink, or directory conflict has no text markers;
+   - resolve every conflict intelligently, preserving both compatible intents;
+   - remove all merge markers;
+   - run `hop check` with the returned prompt state (Hop requires checked
+     reconciliation evidence before it will accept a new proposal);
+   - create a new proposal and run `hop land` again; and
+   - repeat if accepted state raced forward again.
+
+8. Report the accepted result, validation, and remaining risks. Keep internal
    state and evidence IDs out of the normal response unless they help explain a
    failure or the user asks for them. Confirm that `hop land` reported the
    selected visible project root as synchronized.
@@ -114,11 +133,16 @@ Stop before acceptance only when:
 - the user explicitly says `review first`, `proposal only`, `do not land`, or
   otherwise asks to approve the result before it is accepted;
 - validation fails;
-- Hop reports overlap, a changed accepted head, or visible-root divergence; or
+- Hop reports visible-root divergence; a conflict has genuine product ambiguity
+  that cannot be resolved from both recorded intents; or
 - acceptance would require a destructive, external, or out-of-scope action not
   authorized by the captured task.
 
-On overlap or validation failure, preserve the proposal and report the block.
+Ordinary textual overlap is not a reason to stop. Hop first performs a real
+three-way content merge; genuine unresolved hunks enter the automatic
+reconciliation loop above. Preserve and report a block only when the intents
+are product-level incompatible, required validation cannot be repaired, or
+safe continuation needs new user authority.
 If visible-root synchronization is blocked, do not bypass it with `hop accept`,
 force checkout, reset, or file copying. Preserve the proposal and identify the
 user-owned paths that must be resolved. `hop accept` is reserved for an

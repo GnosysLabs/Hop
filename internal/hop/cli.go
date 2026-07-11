@@ -22,6 +22,7 @@ Usage:
   hop propose [--summary TEXT] STATE
   hop accept STATE [-- COMMAND [ARG...]]
   hop land STATE [-- COMMAND [ARG...]]
+  hop refresh PROPOSAL
   hop sync
   hop status
   hop graph
@@ -38,7 +39,7 @@ Usage:
 Add --json anywhere for machine-readable output.
 `
 
-const Version = "0.1.0-alpha.3"
+const Version = "0.1.0-alpha.4"
 
 func RunCLI(args []string, stdout, stderr io.Writer) int {
 	return RunCLIWithInput(args, os.Stdin, stdout, stderr)
@@ -266,6 +267,28 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		result, err := service.Land(ctx, stateID, argv)
 		value = result
 		if err != nil {
+			var conflict *ConflictError
+			if errors.As(err, &conflict) {
+				refresh, refreshErr := service.Refresh(ctx, stateID)
+				if refreshErr != nil {
+					preparationErr := fmt.Errorf("automatic merge conflict detected (%v), but reconciliation preparation failed: %v", err, refreshErr)
+					return printCLIError(preparationErr, jsonOutput, stdout, stderr)
+				}
+				if jsonOutput {
+					writeJSON(stdout, map[string]any{
+						"ok":             false,
+						"error":          err.Error(),
+						"exit_code":      20,
+						"conflict":       conflict,
+						"reconciliation": refresh,
+						"next_command":   "resolve the returned workspace, then check, propose, and land using the returned prompt state",
+					})
+					return 20
+				}
+				fmt.Fprintf(stderr, "hop: %v\n", err)
+				printRefreshSummary(stdout, refresh)
+				return 20
+			}
 			return printCLIError(err, jsonOutput, stdout, stderr)
 		}
 		if !jsonOutput {
@@ -277,6 +300,20 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(stderr, "Warning: %s\n", warning)
 			}
+		}
+
+	case "refresh", "reconcile":
+		if len(commandArgs) != 1 {
+			fmt.Fprintln(stderr, "usage: hop refresh PROPOSAL")
+			return 2
+		}
+		result, err := service.Refresh(ctx, commandArgs[0])
+		value = result
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if !jsonOutput {
+			printRefreshSummary(stdout, result)
 		}
 
 	case "sync":
@@ -529,7 +566,7 @@ func printCLIError(err error, jsonOutput bool, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stderr, "hop: %v\n", err)
 		if conflict != nil && len(conflict.Paths) > 0 {
-			fmt.Fprintln(stderr, "Overlapping paths:")
+			fmt.Fprintln(stderr, "Merge conflicts:")
 			for _, path := range conflict.Paths {
 				fmt.Fprintf(stderr, "  %s\n", path)
 			}
@@ -542,6 +579,23 @@ func printCLIError(err error, jsonOutput bool, stdout, stderr io.Writer) int {
 		}
 	}
 	return code
+}
+
+func printRefreshSummary(w io.Writer, result RefreshResult) {
+	action := "Prepared"
+	if result.Reused {
+		action = "Reusing"
+	}
+	fmt.Fprintf(w, "%s reconciliation prompt %s\n", action, result.Prompt.ID)
+	fmt.Fprintf(w, "Reconciliation attempt: %s\n", result.Attempt.ID)
+	fmt.Fprintf(w, "Workspace: %s\n", result.Workspace)
+	fmt.Fprintf(w, "Accepted input: %s · commit %s\n", result.AcceptedHead.ID, shortHash(result.AcceptedHead.GitCommit))
+	fmt.Fprintf(w, "Proposal input: %s · commit %s\n", result.Proposal.ID, shortHash(result.Proposal.GitCommit))
+	fmt.Fprintln(w, "Resolve these genuine merge conflicts while preserving both intents (structural conflicts may have no text markers):")
+	for _, path := range result.Conflicts {
+		fmt.Fprintf(w, "  %s\n", path)
+	}
+	fmt.Fprintf(w, "Continue automatically with: hop check %s -- <test-command>, then propose and land again.\n", result.Prompt.ID)
 }
 
 func removeFlag(args []string, wanted string) (bool, []string) {

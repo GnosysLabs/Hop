@@ -68,6 +68,7 @@ hop status --json
 hop check "$HOP_STATE_ID" -- <command>
 hop propose --summary "<summary>" "$HOP_STATE_ID"
 hop land <proposal-state> -- <final validation command>
+hop refresh <proposal-state>
 ```
 
 `hop check` snapshots the attempt and runs the command in a detached worktree materialized from that exact checkpoint. Edits made concurrently in the live workspace do not change the tested tree.
@@ -77,10 +78,30 @@ hop land <proposal-state> -- <final validation command>
 The initial task prompt authorizes the agent to run `hop land` after successful
 validation; a second user approval is not required. Manual review is an opt-in
 mode: stop at the proposal only when the user explicitly asks to review or
-approve before acceptance. Validation failure, overlap, a stale accepted head,
-or newly required destructive/external scope also stops automatic acceptance.
+approve before acceptance. Validation failure, visible-root divergence,
+unresolved product ambiguity, or newly required destructive/external scope
+stops automatic acceptance. Path overlap and a stale accepted head do not:
+Hop merges, retries, or prepares agent reconciliation.
 
-`hop land` is the Desktop operation. It compares paths changed by the proposal with paths accepted since its base, validates and advances accepted state, then safely materializes that tree into the selected visible project root. The root must still match an accepted Hop ancestor, and ignored or untracked destination collisions block before acceptance. Materialization uses a disposable index and never moves HEAD, the active branch, or the user's real index.
+`hop land` is the Desktop operation. It performs a real Git three-way content
+merge, so compatible edits in the same file and identical changes compose
+automatically. It validates and advances accepted state, then safely
+materializes that tree into the selected visible project root. The root must
+still match an accepted Hop ancestor, and ignored or untracked destination
+collisions block before acceptance. Materialization uses a disposable index and
+never moves HEAD, the active branch, or the user's real index.
+
+When the three-way merge has genuine unresolved conflicts, `hop land` returns
+exit `20` and automatically prepares a reconciliation prompt in the original
+task but a fresh isolated attempt/workspace. Its JSON includes
+`reconciliation.prompt`, `workspace`,
+`conflicts`, and the proposal/current accepted states. The agent adopts that
+prompt/workspace, resolves both intents, checks, proposes, and lands again.
+Structural, binary, delete/rename, mode, and symlink conflicts may have no text
+markers, so the agent must inspect both returned input states. Hop requires a
+successful `hop check` on the resolved tree before reproposal. The user is not
+asked to coordinate ordinary code conflicts. `hop refresh` is the idempotent
+explicit form of the same preparation step.
 
 `hop accept` is the controller/kernel operation. It advances SQLite and
 `refs/hop/accepted` but intentionally leaves the visible root untouched.
@@ -105,7 +126,7 @@ command, summary, output, or source file.
 | `0` | Success |
 | `1` | Git, SQLite, filesystem, or internal error |
 | `2` | Invalid CLI usage |
-| `20` | Overlap or conservative conflict block |
+| `20` | Genuine three-way merge conflict; reconciliation workspace prepared |
 | `21` | Accepted or attempt head changed during compare-and-swap |
 | `22` | Validation command failed |
 | `23` | Visible project root diverged or contains an overwrite collision |
@@ -146,7 +167,10 @@ provide the same boundary inside compatible agent clients.
 - **Check failure:** fix the live workspace, checkpoint/check again, then create a new proposal.
 - **Review-only request:** preserve and report the proposal without landing it.
 - **Frozen proposal needs changes:** record a follow-up prompt; never mutate the stored proposal.
-- **Overlap on landing:** retain both lineages and reconcile through a new prompt against current accepted state.
+- **Merge conflict on landing:** continue automatically in the returned
+  reconciliation prompt/workspace; inspect both inputs, resolve textual and
+  structural conflicts, validate, propose, and land again. Stop only for
+  product ambiguity, not ordinary textual overlap.
 - **Visible-root conflict:** preserve the proposal and the user's files. Do not substitute controller-only `hop accept`; resolve or capture the visible changes, then land again.
 - **Controller-accepted root is stale:** run `hop sync`; it succeeds only from an accepted ancestor and never overwrites divergence.
 - **Ref inconsistency:** run `hop doctor`; use `hop doctor --repair` only outside final validation.

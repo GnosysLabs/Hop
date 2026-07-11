@@ -124,6 +124,13 @@ func truncateRecordedOutput(output string) string {
 
 func acquireProjectLock(ctx context.Context, root, name string) (func(), error) {
 	path := filepath.Join(root, ".hop", name+".lock")
+	return acquireFileLock(ctx, path, "Hop "+name)
+}
+
+func acquireFileLock(ctx context.Context, path, description string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create %s lock directory: %w", description, err)
+	}
 	for {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
@@ -160,10 +167,23 @@ func acquireProjectLock(ctx context.Context, root, name string) (func(), error) 
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("wait for Hop %s lock: %w", name, ctx.Err())
+			return nil, fmt.Errorf("wait for %s lock: %w", description, ctx.Err())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+func repositoryInitLockPath(path string) (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("locate user cache for repository initialization lock: %w", err)
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository initialization path: %w", err)
+	}
+	digest := sha256.Sum256([]byte(filepath.Clean(canonical)))
+	return filepath.Join(cache, "hop", "locks", "repository-"+hex.EncodeToString(digest[:])+".lock"), nil
 }
 
 func shellQuote(argv []string) string {
