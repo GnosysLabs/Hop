@@ -37,6 +37,9 @@ This repository contains the first local alpha kernel. It supports:
 
 It does not yet include an agent-process adapter, project knowledge, claims, remote synchronization, a GUI, or semantic merging.
 
+See [the product blueprint](docs/product-blueprint.md) for the complete model,
+design principles, and phased roadmap.
+
 ## How the pieces fit
 
 ```text
