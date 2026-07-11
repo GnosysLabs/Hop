@@ -21,8 +21,10 @@ different moments and causal roles.
 ## Task
 
 A task groups the prompts and attempts pursuing one user outcome. Follow-up
-messages in the same Codex task stay connected automatically through
-`CODEX_THREAD_ID`.
+messages pursuing unfinished work stay connected automatically through
+`CODEX_THREAD_ID`. Once that outcome is accepted, the next message starts a new
+Hop task at the latest accepted state even when the Codex conversation stays
+open.
 
 ## Attempt and workspace
 

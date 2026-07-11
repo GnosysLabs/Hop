@@ -415,6 +415,41 @@ func (s *Store) SetAgentSessionHead(ctx context.Context, agent, sessionID, state
 	return nil
 }
 
+// RetargetAgentSessions moves interactive sessions that currently point into
+// one attempt to a successor prompt. Reconciliation uses this so a follow-up
+// received while conflicts are being resolved reaches the reconciliation
+// workspace instead of reopening the stale source workspace.
+func (s *Store) RetargetAgentSessions(ctx context.Context, agent, fromAttemptID, expectedHeadID, toStateID string) error {
+	if strings.TrimSpace(agent) == "" || strings.TrimSpace(fromAttemptID) == "" ||
+		strings.TrimSpace(expectedHeadID) == "" || strings.TrimSpace(toStateID) == "" {
+		return errors.New("hop: agent, source attempt, expected head, and target state are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin agent session retarget: %w", err)
+	}
+	defer tx.Rollback()
+	attempt, err := attemptTx(ctx, tx, fromAttemptID)
+	if err != nil {
+		return err
+	}
+	if attempt.HeadStateID != expectedHeadID {
+		return &HeadChangedError{Scope: "attempt", Expected: expectedHeadID, Actual: attempt.HeadStateID}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agent_sessions
+		 SET head_state_id = ?, updated_at = ?
+		 WHERE agent = ?
+		   AND head_state_id IN (SELECT id FROM states WHERE attempt_id = ?)`,
+		toStateID, formatTime(time.Now().UTC()), agent, fromAttemptID); err != nil {
+		return fmt.Errorf("retarget agent sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit agent session retarget: %w", err)
+	}
+	return nil
+}
+
 // CreateTaskAttemptPrompt atomically creates all three records. The prompt is
 // durable and the attempt head points to it before the transaction becomes
 // visible, so an orchestrator may safely deliver the prompt after this returns.
@@ -567,6 +602,8 @@ func (s *Store) CreateAttemptPrompt(
 	attempt Attempt,
 	prompt State,
 	parents []Parent,
+	sessionSourceAttemptID string,
+	expectedSourceHeadID string,
 ) (Attempt, State, error) {
 	now := time.Now().UTC()
 	if attempt.ID == "" {
@@ -625,6 +662,20 @@ func (s *Store) CreateAttemptPrompt(
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = ?`, attempt.TaskID).Scan(&taskExists); err != nil {
 		return Attempt{}, State{}, dbNotFound("task", attempt.TaskID, err)
 	}
+	if sessionSourceAttemptID != "" {
+		if expectedSourceHeadID == "" {
+			return Attempt{}, State{}, errors.New("hop: reconciliation source head is required")
+		}
+		sourceAttempt, err := attemptTx(ctx, tx, sessionSourceAttemptID)
+		if err != nil {
+			return Attempt{}, State{}, err
+		}
+		if sourceAttempt.HeadStateID != expectedSourceHeadID {
+			return Attempt{}, State{}, &HeadChangedError{
+				Scope: "attempt", Expected: expectedSourceHeadID, Actual: sourceAttempt.HeadStateID,
+			}
+		}
+	}
 	base, err := stateTx(ctx, tx, attempt.BaseStateID)
 	if err != nil {
 		return Attempt{}, State{}, fmt.Errorf("read reconciliation base state: %w", err)
@@ -658,6 +709,16 @@ func (s *Store) CreateAttemptPrompt(
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE attempts SET head_state_id = ? WHERE id = ?`, prompt.ID, attempt.ID); err != nil {
 		return Attempt{}, State{}, fmt.Errorf("install reconciliation attempt head: %w", err)
+	}
+	if sessionSourceAttemptID != "" {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE agent_sessions
+			 SET head_state_id = ?, updated_at = ?
+			 WHERE agent = ?
+			   AND head_state_id IN (SELECT id FROM states WHERE attempt_id = ?)`,
+			prompt.ID, formatTime(now), attempt.Agent, sessionSourceAttemptID); err != nil {
+			return Attempt{}, State{}, fmt.Errorf("retarget reconciliation sessions: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET status = 'reconciling' WHERE id = ?`, attempt.TaskID); err != nil {
@@ -839,6 +900,17 @@ func (s *Store) CASAccept(
 		if err != nil {
 			return State{}, fmt.Errorf("read proposal parent: %w", err)
 		}
+		if proposal.AttemptID != "" {
+			attempt, err := attemptTx(ctx, tx, proposal.AttemptID)
+			if err != nil {
+				return State{}, err
+			}
+			if attempt.HeadStateID != proposal.ID {
+				return State{}, &HeadChangedError{
+					Scope: "attempt", Expected: proposal.ID, Actual: attempt.HeadStateID,
+				}
+			}
+		}
 		if accepted.TaskID == "" {
 			accepted.TaskID = proposal.TaskID
 		}
@@ -886,6 +958,17 @@ func (s *Store) CASAccept(
 		}
 	}
 	if accepted.TaskID != "" {
+		if accepted.AttemptID != "" {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE attempts
+				 SET status = 'completed'
+				 WHERE task_id = ?
+				   AND id != ?
+				   AND status NOT IN ('accepted', 'completed', 'failed', 'cancelled', 'rejected')`,
+				accepted.TaskID, accepted.AttemptID); err != nil {
+				return State{}, fmt.Errorf("complete superseded task attempts: %w", err)
+			}
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET status = 'accepted' WHERE id = ?`, accepted.TaskID); err != nil {
 			return State{}, fmt.Errorf("mark task accepted: %w", err)
@@ -941,6 +1024,33 @@ func (s *Store) AcceptedForProposal(ctx context.Context, proposalID string) (Sta
 	}
 	if err != nil {
 		return State{}, false, fmt.Errorf("find accepted state for proposal %s: %w", proposalID, err)
+	}
+	state, err := s.GetState(ctx, id)
+	if err != nil {
+		return State{}, false, err
+	}
+	return state, true, nil
+}
+
+// AcceptedForTask returns the latest immutable accepted outcome produced by a
+// task. Unlike the mutable task status, this remains authoritative when an
+// older client has accidentally reactivated an already accepted task.
+func (s *Store) AcceptedForTask(ctx context.Context, taskID string) (State, bool, error) {
+	if strings.TrimSpace(taskID) == "" {
+		return State{}, false, errors.New("hop: task ID is required")
+	}
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id
+		 FROM states
+		 WHERE task_id = ? AND kind = 'accepted'
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT 1`, taskID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, false, nil
+	}
+	if err != nil {
+		return State{}, false, fmt.Errorf("find accepted state for task %s: %w", taskID, err)
 	}
 	state, err := s.GetState(ctx, id)
 	if err != nil {
@@ -1103,6 +1213,34 @@ func (s *Store) GetParents(ctx context.Context, stateID string) ([]Parent, error
 		return nil, fmt.Errorf("iterate state parents: %w", err)
 	}
 	return parents, nil
+}
+
+// StateDescendsFrom reports whether descendantID is the same state as, or has
+// any typed-parent path to, ancestorID. Session rollover uses state ancestry so
+// a mutable task status cannot hide unfinished prompts created after an older
+// accepted outcome.
+func (s *Store) StateDescendsFrom(ctx context.Context, descendantID, ancestorID string) (bool, error) {
+	if strings.TrimSpace(descendantID) == "" || strings.TrimSpace(ancestorID) == "" {
+		return false, errors.New("hop: descendant and ancestor state IDs are required")
+	}
+	var found int
+	err := s.db.QueryRowContext(ctx,
+		`WITH RECURSIVE ancestry(id) AS (
+			SELECT ?
+			UNION
+			SELECT parents.parent_state_id
+			FROM state_parents parents
+			JOIN ancestry ON parents.state_id = ancestry.id
+		 )
+		 SELECT 1 FROM ancestry WHERE id = ? LIMIT 1`,
+		descendantID, ancestorID).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect state ancestry: %w", err)
+	}
+	return found == 1, nil
 }
 
 func (s *Store) ParentByRole(ctx context.Context, stateID, role string) (Parent, error) {

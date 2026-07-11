@@ -37,7 +37,9 @@ Prompt, checkpoint, and proposal states may reference identical Git trees while 
 
 Interactive agents may begin without these variables. `hop begin` returns the
 equivalent IDs and workspace, while `CODEX_THREAD_ID` binds later messages in
-the same Codex task to the existing attempt.
+the same Codex task to unfinished work. Follow-ups before acceptance continue
+the attempt; the first prompt after acceptance starts a fresh task and attempt
+at the latest accepted state.
 
 ## Command contract
 
@@ -111,8 +113,10 @@ accepted state, including projects created with older Hop builds.
 `hop begin` is the Codex Desktop entry point. It initializes Hop when necessary,
 captures the current message before the agent performs project work, and uses
 `CODEX_THREAD_ID` as the default session key. A later `hop begin` in the same
-Codex task checkpoints the prior workspace before appending the follow-up
-prompt state.
+Codex task checkpoints the prior workspace before appending a follow-up while
+that work remains unfinished. Reconciliation transfers the session to its fresh
+attempt. After a proposal is accepted, the next `hop begin` starts from the
+latest accepted state and never reopens the completed workspace.
 
 Pass the original message to `hop begin` without model-side redaction. Hop's
 sanitizer replaces detected credential values before any durable write and

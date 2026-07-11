@@ -194,6 +194,9 @@ func (s *Service) BeginPrompt(ctx context.Context, message, fromStateID, agent, 
 	if redactedSession, findings := RedactPromptSecrets(sessionID); len(findings) > 0 || redactedSession != sessionID {
 		return PromptResult{}, errors.New("hop: refusing to use a potential credential as an agent session ID")
 	}
+	// Serialize interactive prompt capture with other begins. Acceptance checks
+	// the proposal's attempt head again inside its SQLite transaction, so a begin
+	// racing a land makes that proposal stale without sharing accept.lock.
 	release, err := acquireProjectLock(ctx, s.Root, "prompt")
 	if err != nil {
 		return PromptResult{}, err
@@ -204,7 +207,13 @@ func (s *Service) BeginPrompt(ctx context.Context, message, fromStateID, agent, 
 		if stateID, exists, err := s.Store.AgentSessionHead(ctx, agent, sessionID); err != nil {
 			return PromptResult{}, err
 		} else if exists {
-			fromStateID = stateID
+			continuable, err := s.sessionStateContinuable(ctx, stateID)
+			if err != nil {
+				return PromptResult{}, err
+			}
+			if continuable {
+				fromStateID = stateID
+			}
 		}
 	}
 	result, err := s.CreatePrompt(ctx, message, fromStateID, agent)
@@ -217,6 +226,68 @@ func (s *Service) BeginPrompt(ctx context.Context, message, fromStateID, agent, 
 		}
 	}
 	return result, nil
+}
+
+// sessionStateContinuable decides whether an implicit interactive-session
+// pointer still represents unfinished work. An immutable accepted state for
+// the task ends ordinary session continuation even if an older Hop build later
+// changed the task's mutable status back to active. A dirty post-proposal
+// workspace is preserved by continuing it instead of silently abandoning work.
+func (s *Service) sessionStateContinuable(ctx context.Context, stateID string) (bool, error) {
+	state, err := s.Store.GetState(ctx, stateID)
+	if err != nil {
+		return false, err
+	}
+	if state.TaskID == "" || state.AttemptID == "" {
+		return false, fmt.Errorf("session state %s does not belong to a task attempt", state.ID)
+	}
+	accepted, exists, err := s.Store.AcceptedForTask(ctx, state.TaskID)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return true, nil
+	}
+	attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
+	if err != nil {
+		return false, err
+	}
+	head, err := s.Store.GetState(ctx, attempt.HeadStateID)
+	if err != nil {
+		return false, err
+	}
+	covered, err := s.Store.StateDescendsFrom(ctx, accepted.ID, head.ID)
+	if err != nil {
+		return false, err
+	}
+	if !covered {
+		return true, nil
+	}
+	workspaceRepo, err := OpenRepository(attempt.Workspace)
+	if err != nil {
+		return false, err
+	}
+	workspaceTree, err := workspaceRepo.WorktreeTree(ctx, head.SourceTree)
+	if err != nil {
+		return false, err
+	}
+	if workspaceTree != head.SourceTree {
+		return true, nil
+	}
+
+	status := "completed"
+	if attempt.ID == accepted.AttemptID {
+		status = "accepted"
+	}
+	if attempt.Status != status {
+		if err := s.Store.UpdateAttemptStatus(ctx, attempt.ID, status); err != nil {
+			return false, err
+		}
+	}
+	if err := s.Store.UpdateTaskStatus(ctx, state.TaskID, "accepted"); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (s *Service) createInitialPrompt(ctx context.Context, message, agent string) (PromptResult, error) {
@@ -603,6 +674,11 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	if err != nil {
 		return AcceptResult{}, err
 	}
+	if attempt.HeadStateID != proposal.ID {
+		return AcceptResult{}, &HeadChangedError{
+			Scope: "attempt", Expected: proposal.ID, Actual: attempt.HeadStateID,
+		}
+	}
 	baseStateID := proposal.CanonicalAnchorID
 	if baseStateID == "" {
 		baseStateID = attempt.BaseStateID
@@ -804,6 +880,11 @@ func (s *Service) Refresh(ctx context.Context, proposalID string) (RefreshResult
 	if err != nil {
 		return RefreshResult{}, err
 	}
+	if sourceAttempt.HeadStateID != proposal.ID {
+		return RefreshResult{}, &HeadChangedError{
+			Scope: "attempt", Expected: proposal.ID, Actual: sourceAttempt.HeadStateID,
+		}
+	}
 	task, err := s.Store.GetTask(ctx, proposal.TaskID)
 	if err != nil {
 		return RefreshResult{}, err
@@ -815,6 +896,9 @@ func (s *Service) Refresh(ctx context.Context, proposalID string) (RefreshResult
 	if existing, exists, err := s.Store.ReconciliationPrompt(ctx, proposal.ID, current.ID); err != nil {
 		return RefreshResult{}, err
 	} else if exists {
+		if err := s.Store.RetargetAgentSessions(ctx, sourceAttempt.Agent, sourceAttempt.ID, proposal.ID, existing.ID); err != nil {
+			return RefreshResult{}, err
+		}
 		return s.reconciliationResult(ctx, existing, task, proposal, current, true)
 	}
 	baseStateID := proposal.CanonicalAnchorID
@@ -901,7 +985,9 @@ func (s *Service) Refresh(ctx context.Context, proposalID string) (RefreshResult
 			_ = s.Repo.RemoveWorktree(context.Background(), workspace, true)
 		}
 	}()
-	reconciliationAttempt, prompt, err = s.Store.CreateAttemptPrompt(ctx, reconciliationAttempt, prompt, parents)
+	reconciliationAttempt, prompt, err = s.Store.CreateAttemptPrompt(
+		ctx, reconciliationAttempt, prompt, parents, sourceAttempt.ID, proposal.ID,
+	)
 	if err != nil {
 		return RefreshResult{}, err
 	}

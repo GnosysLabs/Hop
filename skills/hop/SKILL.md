@@ -29,9 +29,11 @@ only the shell-added final newline. Never copy the credential anywhere else.
 `hop begin` performs the Desktop bootstrap:
 
 - Initialize Hop automatically when the project has not used it before.
-- Use `CODEX_THREAD_ID` to bind this Codex task to one Hop attempt.
+- Use `CODEX_THREAD_ID` to bind this Codex task to its unfinished Hop work.
 - Create a prompt state and isolated workspace on the first turn.
-- Checkpoint prior workspace effects and append a prompt state on follow-ups.
+- Checkpoint prior workspace effects and append follow-ups until that work lands.
+- Follow a reconciliation into its fresh attempt, then start the first prompt
+  after landing from the latest accepted state instead of reopening old work.
 - Redact detected API keys, tokens, passwords, private keys, authorization
   headers, and credential-bearing connection strings before persistence.
 
@@ -114,8 +116,9 @@ For a read-only or informational turn, the prompt state is sufficient; do not
 invent a proposal when the workspace tree is unchanged.
 
 Do not edit a frozen proposal. A user follow-up triggers this skill again;
-run `hop begin` again before acting. Session binding selects the existing
-attempt automatically, so the user never needs to carry state IDs.
+run `hop begin` again before acting. Session binding selects unfinished work
+automatically and rolls completed work onto the latest accepted state, so the
+user never needs to carry state IDs.
 
 ## Auto-accept by default
 

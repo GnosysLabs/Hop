@@ -35,8 +35,11 @@ capture boundary.
 ## Follow-up messages
 
 A later `hop begin` with the same Codex task session checkpoints existing
-workspace effects, appends a new prompt state, and continues the same attempt.
-The user does not carry state IDs between messages.
+workspace effects, appends a new prompt state, and continues the same attempt
+while that work remains unfinished. If Hop prepares reconciliation, the session
+follows its fresh workspace. After the result lands, the next prompt starts a
+new task and attempt rooted at the latest accepted state. Completed workspaces
+are never reopened, and the user does not carry state IDs between messages.
 
 ## Controller-grade capture
 

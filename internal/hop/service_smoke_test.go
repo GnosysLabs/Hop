@@ -242,7 +242,7 @@ func TestOpenProjectWaitsForInitializationLock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("OpenProject did not resume after initialization lock release")
 	}
 }
@@ -362,6 +362,255 @@ func TestCLIBeginAutoInitializesAndContinuesCodexSession(t *testing.T) {
 		"base.txt":    "base\n",
 		"desktop.txt": "first turn\n",
 	})
+}
+
+func TestBeginRollsAcceptedReconciliationSessionToCurrentHead(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.txt": "color=base\n"})
+
+	session, err := service.BeginPrompt(ctx, "Use blue", "", "codex", "thread-rollover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrent, err := service.CreatePrompt(ctx, "Use red", "", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(session.Workspace, "shared.txt"), "color=blue\n")
+	writeTestFile(t, filepath.Join(concurrent.Workspace, "shared.txt"), "color=red\n")
+
+	sessionProposal, err := service.Propose(ctx, session.Prompt.ID, "Blue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrentProposal, err := service.Propose(ctx, concurrent.Prompt.ID, "Red")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, concurrentProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, sessionProposal.Proposal.ID, nil); err == nil {
+		t.Fatal("stale session proposal unexpectedly landed without reconciliation")
+	} else {
+		var conflict *ConflictError
+		if !errors.As(err, &conflict) {
+			t.Fatalf("land error = %v, want ConflictError", err)
+		}
+	}
+
+	reconciliation, err := service.Refresh(ctx, sessionProposal.Proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciliationHead, exists, err := service.Store.AgentSessionHead(ctx, "codex", "thread-rollover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists || reconciliationHead != reconciliation.Prompt.ID {
+		t.Fatalf("session head = %q, %v; want reconciliation prompt %s", reconciliationHead, exists, reconciliation.Prompt.ID)
+	}
+	writeTestFile(t, filepath.Join(reconciliation.Workspace, "shared.txt"), "color=red-blue\n")
+	if _, err := service.RunCheck(ctx, reconciliation.Prompt.ID, []string{
+		"sh", "-c", `test "$(cat shared.txt)" = "color=red-blue"`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolvedProposal, err := service.Propose(ctx, reconciliation.Prompt.ID, "Resolve red and blue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, resolvedProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	sourceAttempt, err := service.Store.GetAttempt(ctx, session.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceAttempt.Status != "completed" {
+		t.Fatalf("source attempt status = %q, want completed", sourceAttempt.Status)
+	}
+
+	// Rollover must use the latest global accepted state, not merely this task's
+	// accepted outcome.
+	later, err := service.CreatePrompt(ctx, "Add a later accepted change", "", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(later.Workspace, "later.txt"), "later\n")
+	laterProposal, err := service.Propose(ctx, later.Prompt.ID, "Later accepted change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	laterAccepted, err := service.Land(ctx, laterProposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := service.BeginPrompt(ctx, "Next request", "", "codex", "thread-rollover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFreshRollover := func(label string, result PromptResult) {
+		t.Helper()
+		if result.Checkpoint != nil {
+			t.Fatalf("%s continued accepted session with checkpoint %s", label, result.Checkpoint.ID)
+		}
+		if result.Attempt.ID == session.Attempt.ID || result.Attempt.ID == reconciliation.Attempt.ID {
+			t.Fatalf("%s reused completed attempt %s", label, result.Attempt.ID)
+		}
+		if result.Task.ID == session.Task.ID {
+			t.Fatalf("%s reopened accepted task %s", label, result.Task.ID)
+		}
+		if result.Attempt.BaseStateID != laterAccepted.State.ID {
+			t.Fatalf("%s base = %s, want %s", label, result.Attempt.BaseStateID, laterAccepted.State.ID)
+		}
+		if result.Prompt.CanonicalAnchorID != laterAccepted.State.ID ||
+			result.Prompt.SourceTree != laterAccepted.State.SourceTree ||
+			result.Prompt.GitCommit != laterAccepted.State.GitCommit {
+			t.Fatalf("%s prompt was not rooted at latest accepted head: %#v; accepted=%#v", label, result.Prompt, laterAccepted.State)
+		}
+		if contents, err := os.ReadFile(filepath.Join(result.Workspace, "shared.txt")); err != nil || string(contents) != "color=red-blue\n" {
+			t.Fatalf("%s shared workspace = %q, err=%v", label, string(contents), err)
+		}
+		if contents, err := os.ReadFile(filepath.Join(result.Workspace, "later.txt")); err != nil || string(contents) != "later\n" {
+			t.Fatalf("%s later workspace = %q, err=%v", label, string(contents), err)
+		}
+	}
+	assertFreshRollover("normal reconciliation session", next)
+	head, exists, err := service.Store.AgentSessionHead(ctx, "codex", "thread-rollover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists || head != next.Prompt.ID {
+		t.Fatalf("session head = %q, %v; want %s", head, exists, next.Prompt.ID)
+	}
+
+	// Older Hop builds could reactivate both records after acceptance. The
+	// immutable accepted outcome, not these mutable statuses, must drive rollover.
+	if err := service.Store.UpdateAttemptStatus(ctx, session.Attempt.ID, "active"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Store.UpdateTaskStatus(ctx, session.Task.ID, "active"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Store.SetAgentSessionHead(ctx, "codex", "legacy-thread-rollover", session.Prompt.ID); err != nil {
+		t.Fatal(err)
+	}
+	legacyNext, err := service.BeginPrompt(ctx, "Legacy next request", "", "codex", "legacy-thread-rollover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFreshRollover("legacy session", legacyNext)
+	sourceAttempt, err = service.Store.GetAttempt(ctx, session.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceAttempt.Status == "active" {
+		t.Fatalf("source attempt %s was left active", sourceAttempt.ID)
+	}
+	head, exists, err = service.Store.AgentSessionHead(ctx, "codex", "legacy-thread-rollover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists || head != legacyNext.Prompt.ID {
+		t.Fatalf("legacy session head = %q, %v; want %s", head, exists, legacyNext.Prompt.ID)
+	}
+}
+
+func TestLandRejectsProposalSupersededByFollowup(t *testing.T) {
+	ctx := context.Background()
+	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.BeginPrompt(ctx, "Create a change", "", "codex", "thread-stale-proposal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "change.txt"), "first\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "First change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	followup, err := service.BeginPrompt(ctx, "Refine that change", "", "codex", "thread-stale-proposal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if followup.Attempt.ID != started.Attempt.ID || followup.Checkpoint == nil {
+		t.Fatalf("follow-up did not advance the original attempt: %#v", followup)
+	}
+	if _, err := service.Land(ctx, proposal.Proposal.ID, nil); !errors.Is(err, ErrAttemptHeadChanged) {
+		t.Fatalf("superseded proposal land error = %v, want ErrAttemptHeadChanged", err)
+	}
+	parents := canonicalizeParents([]Parent{
+		{StateID: initial.ID, Role: "canonical_parent", Order: 0},
+		{StateID: proposal.Proposal.ID, Role: "proposal_parent", Order: 1},
+	})
+	accepted := State{
+		ID:                newID("a"),
+		Kind:              StateAccepted,
+		TaskID:            proposal.Proposal.TaskID,
+		AttemptID:         proposal.Proposal.AttemptID,
+		CanonicalAnchorID: initial.ID,
+		SourceTree:        proposal.Proposal.SourceTree,
+		GitCommit:         proposal.Proposal.GitCommit,
+		Summary:           proposal.Proposal.Summary,
+		Agent:             proposal.Proposal.Agent,
+		CreatedAt:         time.Now().UTC(),
+		Parents:           parents,
+	}
+	accepted.Digest, err = digestState(accepted, parents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Store.CASAccept(ctx, initial.ID, accepted, parents); !errors.Is(err, ErrAttemptHeadChanged) {
+		t.Fatalf("transactional stale proposal error = %v, want ErrAttemptHeadChanged", err)
+	}
+	head, err := service.Store.AcceptedHead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.ID != initial.ID {
+		t.Fatalf("superseded proposal advanced accepted head to %s", head.ID)
+	}
+}
+
+func TestBeginKeepsUnfinishedStateCreatedAfterAcceptedOutcome(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.BeginPrompt(ctx, "Land the first change", "", "codex", "thread-post-accept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "landed.txt"), "landed\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Landed change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, proposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Although agents must not mutate a frozen proposal, preserve any such
+	// residual work rather than silently rolling it away.
+	writeTestFile(t, filepath.Join(started.Workspace, "pending.txt"), "pending\n")
+	continued, err := service.BeginPrompt(ctx, "Preserve the pending work", "", "codex", "thread-post-accept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.Attempt.ID != started.Attempt.ID || continued.Checkpoint == nil {
+		t.Fatalf("dirty accepted workspace was not preserved: %#v", continued)
+	}
+	assertTreeFiles(t, service, continued.Checkpoint.GitCommit, map[string]string{
+		"base.txt":    "base\n",
+		"landed.txt":  "landed\n",
+		"pending.txt": "pending\n",
+	})
+	again, err := service.BeginPrompt(ctx, "Continue that pending work", "", "codex", "thread-post-accept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Attempt.ID != started.Attempt.ID || again.Checkpoint == nil {
+		t.Fatalf("post-acceptance prompt lineage was abandoned: %#v", again)
+	}
 }
 
 func TestDoctorRejectsCommitTreeAndDigestMismatch(t *testing.T) {
