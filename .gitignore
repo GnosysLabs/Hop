@@ -1,0 +1,10 @@
+.DS_Store
+
+# Hop's local state and isolated workspaces.
+/.hop/
+
+# Local build and verification artifacts.
+/hop
+/SHA256SUMS
+/coverage.out
+*.test
