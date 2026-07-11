@@ -87,3 +87,7 @@ Hop is currently an early alpha. Expect its state model and CLI to evolve before
 - [Security and privacy](https://githop.xyz/GnosysLabs/Hop/wiki/Security-and-Privacy)
 - [Architecture](https://githop.xyz/GnosysLabs/Hop/wiki/Architecture)
 - [Product blueprint](docs/product-blueprint.md)
+
+## License
+
+[MIT](LICENSE) © 2026 Gnosys Labs LLC.
