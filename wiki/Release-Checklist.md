@@ -1,7 +1,8 @@
 # Release checklist
 
-Hop releases are built on `githop.xyz` by Gitea Actions and uploaded by
-GoReleaser as draft Gitea Releases.
+Hop releases are built on a trusted maintainer machine and uploaded by
+GoReleaser as draft Gitea Releases. Gitea Actions and act runners are not
+required; the server only stores source, tags, release metadata, and assets.
 
 The canonical repository is `githop.xyz/GnosysLabs/Hop`.
 
@@ -9,15 +10,12 @@ The canonical repository is `githop.xyz/GnosysLabs/Hop`.
 
 - Create the `GnosysLabs/Hop` repository and set its default branch to `main`.
 - Configure `origin` as `https://githop.xyz/GnosysLabs/Hop.git`.
-- Run a currently patched Gitea 1.26.x or newer, enable Actions, and enable
-  Actions for the repository. Hop's least-privilege workflow uses the 1.26 job
-  token permission model.
-- Register trusted, isolated `ubuntu-latest` and `windows-latest` act runners.
-- Allow the repository job token `code: read` and `releases: write`.
-- Ensure `${{ secrets.GITEA_TOKEN }}` can create releases in this repository.
-- Keep third-party Actions pinned to reviewed commit SHAs. When upgrading
-  GoReleaser, update its version and both hard-coded Linux archive checksums in
-  `.gitea/workflows/release.yml` from the official release checksum file.
+- Keep Gitea Actions disabled when the instance does not have dedicated runner
+  capacity; Hop's release process does not depend on it.
+- Create a narrowly scoped maintainer access token that can write releases.
+  Export it as `GITEA_TOKEN` only for the local publish command, then unset it.
+- When upgrading GoReleaser, update its pinned version and four archive
+  checksums in `scripts/release-local.sh` from the official checksum file.
 - Permit release attachment MIME types for `.tar.gz`, `.zip`, and `.txt` in
   Gitea's `[attachment] ALLOWED_TYPES` configuration.
 - Enable the repository wiki, then push the files in `wiki/` to its wiki Git
@@ -25,24 +23,19 @@ The canonical repository is `githop.xyz/GnosysLabs/Hop`.
 
 ## Public-launch gates
 
-- Choose and add a `LICENSE`. The release workflow intentionally fails without
-  one; this is a product/legal decision, not a build default.
+- Choose and add a `LICENSE`. The local publishing script intentionally fails
+  without one; this is a product/legal decision, not a build default.
 - Add `SECURITY.md` with a monitored private disclosure address.
 - Create an offline-controlled release-signing key, publish its public key, and
   add detached signing for `checksums.txt` before general availability.
 - Confirm the `githop.xyz/GnosysLabs/Hop` Go import path serves valid `go-import`
   metadata.
-- Back up the Gitea database, repositories, release attachments, and Actions
-  secrets.
+- Back up the Gitea database, repositories, and release attachments.
 
 ## Validate before tagging
 
 ```bash
-go test -race ./...
-go vet ./...
-sh -n scripts/install.sh
-goreleaser check
-goreleaser release --snapshot --clean
+scripts/release-local.sh --snapshot
 ```
 
 Inspect `dist/` and test at least one archive on each operating system family.
@@ -51,15 +44,19 @@ Confirm `hop version` reports the snapshot/tag-injected version and
 
 ## Create a release
 
-1. Update release notes and the expected version.
-2. Create a signed semantic-version tag such as `v0.1.0-alpha.1`.
-3. Push the tag to `githop.xyz`.
-4. The `.gitea/workflows/release.yml` workflow runs race tests and vet, builds
-   six platform archives, generates `checksums.txt`, and uploads a draft.
-5. Download the draft assets and independently verify checksums, version output,
+1. Update release notes. The signed Git tag is the version source and is
+   injected into the binaries automatically.
+2. Run `scripts/release-local.sh --snapshot` and inspect the artifacts.
+3. Create a signed semantic-version tag such as `v0.1.0-alpha.1` and push it.
+4. Export a locally stored, scoped token: `export GITEA_TOKEN=...`.
+5. Run `scripts/release-local.sh --publish`. It reruns race tests, vet, installer
+   checks, builds six platform archives, generates `checksums.txt`, and uploads
+   a draft without executing build work on the Gitea server.
+6. Immediately run `unset GITEA_TOKEN`.
+7. Download the draft assets and independently verify checksums, version output,
    skill installation, and a disposable Hop project.
-6. Publish the Gitea draft only after those checks pass.
-7. Test both one-command installers against the now-published release.
+8. Publish the Gitea draft only after those checks pass.
+9. Test both one-command installers against the now-published release.
 
 ## Expected assets
 

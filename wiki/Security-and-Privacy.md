@@ -33,11 +33,12 @@ sign `checksums.txt` with an offline-controlled release key and publish the
 public key independently. Checksum signing is listed as a launch gate in the
 [release checklist](Release-Checklist).
 
-## Runner trust
+## Release-machine trust
 
-Release jobs execute on Gitea act runners. Only trusted, isolated runners should
-receive release tags or release tokens. Do not run secret-bearing release jobs
-from unreviewed fork pull requests.
+Release builds execute on a maintainer machine, not on the Gitea server. Use a
+trusted, patched machine; keep the release token out of shell history and source
+files; scope it to the Hop repository; export it only for the publish command;
+and unset it immediately afterward. Releases upload as drafts for review.
 
 ## Filesystem safety
 

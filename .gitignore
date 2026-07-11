@@ -5,6 +5,7 @@
 
 # Local build and verification artifacts.
 /hop
+/dist/
 /SHA256SUMS
 /coverage.out
 *.test

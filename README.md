@@ -148,6 +148,8 @@ No project is modified during installation. A project receives its local
 
 Release installer URLs become available after the corresponding Gitea Release
 is published. Until the first public release exists, use the source build.
+Hop does not require Gitea Actions: maintainers build and upload draft releases
+from a trusted local machine with `scripts/release-local.sh`.
 
 ## Getting started
 

@@ -65,3 +65,21 @@ func TestProductDocumentationUsesCanonicalGiteaHost(t *testing.T) {
 		}
 	}
 }
+
+func TestDistributionDoesNotRequireGiteaActions(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	workflows, err := filepath.Glob(filepath.Join(root, ".gitea", "workflows", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workflows) != 0 {
+		t.Fatalf("Gitea Actions workflows remain enabled in source: %v", workflows)
+	}
+	contents, err := os.ReadFile(filepath.Join(root, "wiki", "Release-Checklist.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), ".gitea/workflows/") {
+		t.Fatal("release checklist still depends on a Gitea Actions workflow")
+	}
+}
