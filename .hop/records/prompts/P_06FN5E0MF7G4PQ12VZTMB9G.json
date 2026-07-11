@@ -6,7 +6,6 @@
   "prompt": "idk what this is, im going to disable the actions thing on our instance we dont have the server resources for i\n\nAttachment: /var/folders/58/b6yn15tx3jb7_6lw9m67f89m0000gn/T/TemporaryItems/NSIRD_screencaptureui_4Rixx8/Screenshot 2026-07-11 at 12.45.33 PM.png",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T19:47:03.417913Z",
   "metadata": {
     "source_tree": "52869fbc4277ef5d2db2794c6d7867d6c23c423c",

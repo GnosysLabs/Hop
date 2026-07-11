@@ -6,7 +6,6 @@
   "prompt": "so.. i can have multiple agents working on the same codebase at the same time and it should be fine?",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T17:30:53.807892Z",
   "metadata": {
     "source_tree": "22e1b6bfde927afbe0622a552cfe6703fed85f3f",

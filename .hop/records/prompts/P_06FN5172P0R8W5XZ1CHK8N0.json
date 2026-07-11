@@ -6,7 +6,6 @@
   "prompt": "i wont be hosting this on github, ill be hosting it on githop.xyz which is a custom gitea. the site isnt live yet but its done",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T18:51:08.33613Z",
   "metadata": {
     "source_tree": "7879aa3466a9b33dcebbe8c1c9873334976577e5",

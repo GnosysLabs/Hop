@@ -6,7 +6,6 @@
   "prompt": "hop is broken. \"I updated the reference to v=3, but Hop blocked landing because another recent task also changed hop-home.css, creating an overlap. That stylesheet conflict needs to be resolved before I can safely apply the cache-busting fix.\" this is fucking horse shit. the agent should intelligently resolve the conflict",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T17:49:23.598284Z",
   "metadata": {
     "source_tree": "22e1b6bfde927afbe0622a552cfe6703fed85f3f",

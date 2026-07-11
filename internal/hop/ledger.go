@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -39,14 +40,34 @@ type PortablePromptMetadata struct {
 	AttemptHeadKind string `json:"attempt_head_kind,omitempty"`
 }
 
+type promptExportOptions struct {
+	AttemptIDs      []string
+	PublishableOnly bool
+	Status          string
+	ResponseSummary string
+	Overwrite       bool
+}
+
+type suppressedPromptManifest struct {
+	PromptIDs []string `json:"prompt_ids"`
+}
+
 // ExportPromptLedger writes immutable prompt files beneath
 // .hop/records/prompts. Passing attemptIDs restricts the export to those
 // attempts, which keeps concurrent proposals from writing the same files.
 func (s *Service) ExportPromptLedger(ctx context.Context, destinationRoot string, attemptIDs ...string) (PortablePromptLedger, error) {
+	return s.exportPromptLedger(ctx, destinationRoot, promptExportOptions{AttemptIDs: attemptIDs, PublishableOnly: true})
+}
+
+func (s *Service) exportPromptLedger(ctx context.Context, destinationRoot string, options promptExportOptions) (PortablePromptLedger, error) {
 	if destinationRoot == "" {
 		destinationRoot = s.Root
 	}
 	graph, err := s.Store.Graph(ctx, "")
+	if err != nil {
+		return PortablePromptLedger{}, err
+	}
+	suppressed, err := loadSuppressedPromptIDs(destinationRoot)
 	if err != nil {
 		return PortablePromptLedger{}, err
 	}
@@ -55,13 +76,25 @@ func (s *Service) ExportPromptLedger(ctx context.Context, destinationRoot string
 		GeneratedAt:   time.Now().UTC(),
 		Prompts:       make([]PortablePromptRecord, 0),
 	}
-	wantedAttempts := make(map[string]struct{}, len(attemptIDs))
-	for _, attemptID := range attemptIDs {
+	wantedAttempts := make(map[string]struct{}, len(options.AttemptIDs))
+	for _, attemptID := range options.AttemptIDs {
 		wantedAttempts[attemptID] = struct{}{}
+	}
+	lastPromptByAttempt := make(map[string]string)
+	for _, row := range graph {
+		if row.State.Kind == StatePrompt && row.State.Prompt != "" && row.State.AttemptID != "" {
+			lastPromptByAttempt[row.State.AttemptID] = row.State.ID
+		}
 	}
 	for _, row := range graph {
 		state := row.State
 		if state.Kind != StatePrompt || state.Prompt == "" {
+			continue
+		}
+		if _, hidden := suppressed[state.ID]; hidden {
+			continue
+		}
+		if _, reconciliation := decodeReconciliationConflicts(state.Summary); reconciliation || strings.HasPrefix(state.Prompt, "Resolve proposal ") {
 			continue
 		}
 		if len(wantedAttempts) > 0 {
@@ -69,6 +102,24 @@ func (s *Service) ExportPromptLedger(ctx context.Context, destinationRoot string
 				continue
 			}
 		}
+		if state.AttemptID == "" {
+			continue
+		}
+		attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
+		if err != nil {
+			return PortablePromptLedger{}, fmt.Errorf("read attempt for prompt %s: %w", state.ID, err)
+		}
+		var head State
+		if attempt.HeadStateID != "" {
+			head, err = s.Store.GetState(ctx, attempt.HeadStateID)
+			if err != nil {
+				return PortablePromptLedger{}, fmt.Errorf("read attempt head for prompt %s: %w", state.ID, err)
+			}
+		}
+		if options.PublishableOnly && head.Kind != StateProposal && head.Kind != StateAccepted {
+			continue
+		}
+
 		record := PortablePromptRecord{
 			ID:        state.ID,
 			TaskID:    state.TaskID,
@@ -76,32 +127,27 @@ func (s *Service) ExportPromptLedger(ctx context.Context, destinationRoot string
 			StateID:   state.ID,
 			Prompt:    state.Prompt,
 			AgentName: state.Agent,
-			Status:    "unknown",
+			Status:    attempt.Status,
 			CreatedAt: state.CreatedAt,
 			Metadata: PortablePromptMetadata{
 				SourceTree: state.SourceTree,
 				GitCommit:  state.GitCommit,
 			},
 		}
-		if state.AttemptID != "" {
-			attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
-			if err != nil {
-				return PortablePromptLedger{}, fmt.Errorf("read attempt for prompt %s: %w", state.ID, err)
+		record.Metadata.AttemptHead = attempt.HeadStateID
+		record.Metadata.AttemptHeadKind = string(head.Kind)
+		if lastPromptByAttempt[state.AttemptID] == state.ID {
+			record.ResponseSummary = head.Summary
+			if options.ResponseSummary != "" {
+				record.ResponseSummary = options.ResponseSummary
 			}
-			record.Status = attempt.Status
-			record.Metadata.AttemptHead = attempt.HeadStateID
-			if attempt.HeadStateID != "" {
-				head, err := s.Store.GetState(ctx, attempt.HeadStateID)
-				if err != nil {
-					return PortablePromptLedger{}, fmt.Errorf("read attempt head for prompt %s: %w", state.ID, err)
-				}
-				record.Metadata.AttemptHeadKind = string(head.Kind)
-				record.ResponseSummary = head.Summary
-				if head.Kind == StateAccepted || head.Kind == StateFailed || head.Kind == StateCancelled {
-					completedAt := head.CreatedAt
-					record.CompletedAt = &completedAt
-				}
-			}
+		}
+		if options.Status != "" {
+			record.Status = options.Status
+		}
+		if head.Kind == StateAccepted || head.Kind == StateFailed || head.Kind == StateCancelled {
+			completedAt := head.CreatedAt
+			record.CompletedAt = &completedAt
 		}
 		ledger.Prompts = append(ledger.Prompts, record)
 	}
@@ -112,10 +158,12 @@ func (s *Service) ExportPromptLedger(ctx context.Context, destinationRoot string
 	}
 	for _, record := range ledger.Prompts {
 		outputPath := filepath.Join(outputDir, record.ID+".json")
-		if _, err := os.Stat(outputPath); err == nil {
+		_, statErr := os.Stat(outputPath)
+		if statErr == nil && !options.Overwrite {
 			continue // Prompt records are immutable once published.
-		} else if !os.IsNotExist(err) {
-			return PortablePromptLedger{}, fmt.Errorf("inspect prompt record %s: %w", record.ID, err)
+		}
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return PortablePromptLedger{}, fmt.Errorf("inspect prompt record %s: %w", record.ID, statErr)
 		}
 		contents, err := json.MarshalIndent(record, "", "  ")
 		if err != nil {
@@ -146,4 +194,27 @@ func (s *Service) ExportPromptLedger(ctx context.Context, destinationRoot string
 		}
 	}
 	return ledger, nil
+}
+
+func loadSuppressedPromptIDs(destinationRoot string) (map[string]struct{}, error) {
+	path := filepath.Join(destinationRoot, ".hop", "records", "suppressed.json")
+	contents, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return map[string]struct{}{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read suppressed prompt manifest: %w", err)
+	}
+	var manifest suppressedPromptManifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		return nil, fmt.Errorf("decode suppressed prompt manifest: %w", err)
+	}
+	result := make(map[string]struct{}, len(manifest.PromptIDs))
+	for _, id := range manifest.PromptIDs {
+		if !strings.HasPrefix(id, "P_") {
+			return nil, fmt.Errorf("invalid suppressed prompt ID %q", id)
+		}
+		result[id] = struct{}{}
+	}
+	return result, nil
 }

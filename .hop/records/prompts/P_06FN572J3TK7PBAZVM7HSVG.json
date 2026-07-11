@@ -6,7 +6,6 @@
   "prompt": "can you publish it under GnosysLabsLLC/Hop .. i have added my SSH key to githop so you should be able to",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T19:16:44.190798Z",
   "metadata": {
     "source_tree": "a91a4bd37315fa30673005970ce750755e9582be",

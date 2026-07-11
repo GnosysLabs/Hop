@@ -259,8 +259,47 @@ func TestProposeExportsPortablePromptLedger(t *testing.T) {
 	if err := json.Unmarshal(contents, &record); err != nil {
 		t.Fatal(err)
 	}
-	if record.ID != result.Prompt.ID || record.Prompt != "Publish a portable prompt ledger" {
+	if record.ID != result.Prompt.ID || record.Prompt != "Publish a portable prompt ledger" || record.Status != "proposed" || record.ResponseSummary != "Publish the ledger" {
 		t.Fatalf("unexpected portable prompt record: %#v", record)
+	}
+}
+
+func TestExportOmitsActiveInternalAttempt(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	if _, err := service.CreatePrompt(ctx, "Read-only internal audit", "", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := service.ExportPromptLedger(ctx, service.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Prompts) != 0 {
+		t.Fatalf("exported active internal prompts: %#v", ledger.Prompts)
+	}
+}
+
+func TestProposeRespectsSuppressedPromptManifest(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	result, err := service.CreatePrompt(ctx, "Internal controller instruction", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf("{\"prompt_ids\":[%q]}\n", result.Prompt.ID)
+	writeTestFile(t, filepath.Join(result.Workspace, ".hop", "records", "suppressed.json"), manifest)
+	writeTestFile(t, filepath.Join(result.Workspace, "feature.txt"), "done\n")
+	proposal, err := service.Propose(ctx, result.Prompt.ID, "Apply the user-facing change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialized := filepath.Join(t.TempDir(), "proposal")
+	if _, err := service.Repo.AddDetachedWorktree(ctx, materialized, proposal.Proposal.GitCommit); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Repo.RemoveWorktree(ctx, materialized, true) })
+	if _, err := os.Stat(filepath.Join(materialized, ".hop", "records", "prompts", result.Prompt.ID+".json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("suppressed prompt was published: %v", err)
 	}
 }
 
@@ -345,7 +384,7 @@ func TestCLIJSONWorkflow(t *testing.T) {
 	}
 }
 
-func TestCLIExportWritesPortablePromptRecords(t *testing.T) {
+func TestCLIExportOmitsActivePromptRecords(t *testing.T) {
 	t.Setenv("HOP_ROOT", "")
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
@@ -362,7 +401,7 @@ func TestCLIExportWritesPortablePromptRecords(t *testing.T) {
 	runCLIJSONTest(t, []string{"begin", "--agent", "codex", "--json", "Publish prompt records"})
 	runCLIJSONTest(t, []string{"export", "--output", ".", "--json"})
 	entries, err := filepath.Glob(filepath.Join(root, ".hop", "records", "prompts", "P_*.json"))
-	if err != nil || len(entries) != 1 {
+	if err != nil || len(entries) != 0 {
 		t.Fatalf("portable prompt records = %v, err=%v", entries, err)
 	}
 }

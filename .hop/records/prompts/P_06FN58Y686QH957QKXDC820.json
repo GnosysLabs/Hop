@@ -6,7 +6,6 @@
   "prompt": "why would you have to put port 22? thats not how it works with github. wtf?",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T19:24:52.673537Z",
   "metadata": {
     "source_tree": "a91a4bd37315fa30673005970ce750755e9582be",

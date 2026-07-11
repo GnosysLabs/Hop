@@ -6,7 +6,6 @@
   "prompt": "now i want to publish this as a real product people can use. how will people install it? by cloning a git repo and running some commands? can you update the readme with clear installation/getting started instructions, and create the wiki pages as well",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T18:42:58.992885Z",
   "metadata": {
     "source_tree": "8e3074490c46530db90e20242bd16000aee239d0",

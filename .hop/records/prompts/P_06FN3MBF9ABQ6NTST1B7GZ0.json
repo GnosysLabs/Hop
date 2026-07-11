@@ -6,7 +6,6 @@
   "prompt": "what? wtf? i need it in the right folder how do i do that",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T15:35:07.850559Z",
   "metadata": {
     "source_tree": "012d4872472b5c8621c6ef3cedd50509e09e7aa6",

@@ -6,7 +6,6 @@
   "prompt": "sorry actually its https://githop.xyz/org/GnosysLabs/Hop",
   "agent_name": "codex",
   "status": "completed",
-  "response_summary": "Roll completed agent sessions onto the latest accepted state",
   "created_at": "2026-07-11T19:20:32.448864Z",
   "metadata": {
     "source_tree": "a91a4bd37315fa30673005970ce750755e9582be",

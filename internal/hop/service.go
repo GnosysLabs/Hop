@@ -482,19 +482,6 @@ func (s *Service) checkpointAttempt(ctx context.Context, attempt Attempt) (State
 }
 
 func (s *Service) RunCheck(ctx context.Context, stateID string, argv []string) (Check, error) {
-	state, err := s.Store.GetState(ctx, stateID)
-	if err != nil {
-		return Check{}, err
-	}
-	if state.AttemptID != "" {
-		attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
-		if err != nil {
-			return Check{}, err
-		}
-		if _, err := s.ExportPromptLedger(ctx, attempt.Workspace, attempt.ID); err != nil {
-			return Check{}, err
-		}
-	}
 	checkpoint, err := s.Checkpoint(ctx, stateID)
 	if err != nil {
 		return Check{}, err
@@ -564,6 +551,10 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	if err != nil {
 		return ProposalResult{}, err
 	}
+	if strings.TrimSpace(summary) == "" {
+		summary = task.Title
+	}
+	summary, _ = RedactPromptSecrets(summary)
 	reconciliationPrompt, reconciliation, err := s.Store.ReconciliationPromptForAttempt(ctx, attempt.ID)
 	if err != nil {
 		return ProposalResult{}, err
@@ -580,15 +571,12 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	if err != nil {
 		return ProposalResult{}, err
 	}
-	if _, err := s.ExportPromptLedger(ctx, attempt.Workspace, attempt.ID); err != nil {
-		return ProposalResult{}, err
-	}
-	commit, tree, err := workspaceRepo.Snapshot(ctx, "hop: proposal\n")
+	_, validationTree, err := workspaceRepo.Snapshot(ctx, "hop: proposal validation tree\n")
 	if err != nil {
 		return ProposalResult{}, err
 	}
 	if reconciliation {
-		unresolved, err := unresolvedReconciliationMarkers(ctx, workspaceRepo, tree, reconciliationConflicts)
+		unresolved, err := unresolvedReconciliationMarkers(ctx, workspaceRepo, validationTree, reconciliationConflicts)
 		if err != nil {
 			return ProposalResult{}, err
 		}
@@ -596,7 +584,7 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 			return ProposalResult{}, fmt.Errorf("reconciliation still contains merge markers in: %s", strings.Join(unresolved, ", "))
 		}
 	}
-	checks, err := s.Store.ListChecks(ctx, attempt.ID, tree)
+	checks, err := s.Store.ListChecks(ctx, attempt.ID, validationTree)
 	if err != nil {
 		return ProposalResult{}, err
 	}
@@ -612,10 +600,15 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 			return ProposalResult{}, fmt.Errorf("reconciliation must pass hop check on the resolved tree before proposing")
 		}
 	}
-	if strings.TrimSpace(summary) == "" {
-		summary = task.Title
+	if _, err := s.exportPromptLedger(ctx, attempt.Workspace, promptExportOptions{
+		AttemptIDs: []string{attempt.ID}, Status: "proposed", ResponseSummary: summary,
+	}); err != nil {
+		return ProposalResult{}, err
 	}
-	summary, _ = RedactPromptSecrets(summary)
+	commit, tree, err := workspaceRepo.Snapshot(ctx, "hop: proposal\n")
+	if err != nil {
+		return ProposalResult{}, err
+	}
 	canonicalAnchorID := attempt.BaseStateID
 	if reconciliation && reconciliationPrompt.CanonicalAnchorID != "" {
 		canonicalAnchorID = reconciliationPrompt.CanonicalAnchorID

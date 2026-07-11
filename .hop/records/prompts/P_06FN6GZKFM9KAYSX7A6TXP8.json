@@ -6,7 +6,6 @@
   "prompt": "lets finish what we were doing then investigate that, i have added the key to the keychain",
   "agent_name": "codex",
   "status": "accepted",
-  "response_summary": "Require user-provisioned release credentials",
   "created_at": "2026-07-11T22:19:50.013492Z",
   "metadata": {
     "source_tree": "3b5d48444b5e5290839774d383a7498d0190e708",
