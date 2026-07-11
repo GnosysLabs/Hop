@@ -345,6 +345,28 @@ func TestCLIJSONWorkflow(t *testing.T) {
 	}
 }
 
+func TestCLIExportWritesPortablePromptRecords(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	runCLIJSONTest(t, []string{"init", "--json"})
+	runCLIJSONTest(t, []string{"begin", "--agent", "codex", "--json", "Publish prompt records"})
+	runCLIJSONTest(t, []string{"export", "--output", ".", "--json"})
+	entries, err := filepath.Glob(filepath.Join(root, ".hop", "records", "prompts", "P_*.json"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("portable prompt records = %v, err=%v", entries, err)
+	}
+}
+
 func TestCLIBeginAutoInitializesAndContinuesCodexSession(t *testing.T) {
 	t.Setenv("HOP_ROOT", "")
 	root := t.TempDir()

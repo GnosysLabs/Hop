@@ -206,6 +206,14 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			fmt.Fprintln(stderr, "usage: hop checkpoint STATE")
 			return 2
 		}
+		state, err := service.Checkpoint(ctx, commandArgs[0])
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		value = state
+		if !jsonOutput {
+			fmt.Fprintf(stdout, "Created checkpoint %s · tree %s\n", state.ID, shortHash(state.SourceTree))
+		}
 
 	case "export":
 		fs := flag.NewFlagSet("export", flag.ContinueOnError)
@@ -229,15 +237,6 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			}
 			fmt.Fprintf(stdout, "Exported %d prompt records to %s\n", len(ledger.Prompts), filepath.Join(root, ".hop", "records", "prompts"))
 		}
-		state, err := service.Checkpoint(ctx, commandArgs[0])
-		if err != nil {
-			return printCLIError(err, jsonOutput, stdout, stderr)
-		}
-		value = state
-		if !jsonOutput {
-			fmt.Fprintf(stdout, "Created checkpoint %s · tree %s\n", state.ID, shortHash(state.SourceTree))
-		}
-
 	case "check":
 		stateID, argv, ok := splitCommand(commandArgs)
 		if !ok {
