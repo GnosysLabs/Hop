@@ -12,8 +12,11 @@ The canonical repository is `githop.xyz/GnosysLabs/Hop`.
 - Configure `origin` as `https://githop.xyz/GnosysLabs/Hop.git`.
 - Keep Gitea Actions disabled when the instance does not have dedicated runner
   capacity; Hop's release process does not depend on it.
-- Create a narrowly scoped maintainer access token that can write releases.
-  Export it as `GITEA_TOKEN` only for the local publish command, then unset it.
+- Provision a narrowly scoped maintainer access token outside the agent session
+  and store it in the operating system's secret store. Agents and release
+  scripts may use that existing credential, but must never create, rotate, list,
+  or revoke account tokens through Gitea's website or API. Export it as
+  `GITEA_TOKEN` only for the local publish command, then unset it.
 - When upgrading GoReleaser, update its pinned version and four archive
   checksums in `scripts/release-local.sh` from the official checksum file.
 - Permit release attachment MIME types for `.tar.gz`, `.zip`, and `.txt` in
@@ -49,7 +52,8 @@ default skill destinations while preserving unrelated user files.
    injected into the binaries automatically.
 2. Run `scripts/release-local.sh --snapshot` and inspect the artifacts.
 3. Create a signed semantic-version tag such as `v0.1.0-alpha.1` and push it.
-4. Export a locally stored, scoped token: `export GITEA_TOKEN=...`.
+4. Read a pre-provisioned, locally stored scoped token into `GITEA_TOKEN`.
+   Do not generate a task-specific token from an agent session.
 5. Run `scripts/release-local.sh --publish`. It reruns race tests, vet, installer
    checks, builds six platform archives, generates `checksums.txt`, and uploads
    a draft without executing build work on the Gitea server.

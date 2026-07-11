@@ -158,6 +158,15 @@ sanitizer replaces detected credential values before any durable write and
 returns only typed redaction counts. Do not place the value in any later
 command, summary, output, or source file.
 
+## Account credential boundary
+
+Hop never creates, rotates, lists, or revokes provider access tokens. Agents
+must not use account token-management APIs or settings pages as a shortcut for
+publishing work. A release or publishing task may use only a pre-existing
+credential the user deliberately provisioned through an OS secret store or the
+runtime's secret mechanism. When that credential is absent or invalid, stop and
+ask the user to replace it; never mint a task-named token.
+
 ## Exit codes
 
 | Code | Meaning |

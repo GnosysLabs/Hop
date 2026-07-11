@@ -83,3 +83,25 @@ func TestDistributionDoesNotRequireGiteaActions(t *testing.T) {
 		t.Fatal("release checklist still depends on a Gitea Actions workflow")
 	}
 }
+
+func TestReleaseWorkflowRequiresPreProvisionedCredential(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	script, err := os.ReadFile(filepath.Join(root, "scripts", "release-local.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "pre-existing scoped GITEA_TOKEN") {
+		t.Fatal("release script does not require a pre-provisioned credential")
+	}
+	if strings.Contains(string(script), "/tokens") {
+		t.Fatal("release script must not manage provider tokens")
+	}
+	checklist, err := os.ReadFile(filepath.Join(root, "wiki", "Release-Checklist.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(checklist), "must never create, rotate, list,") ||
+		!strings.Contains(string(checklist), "or revoke account tokens") {
+		t.Fatal("release checklist does not forbid agent token management")
+	}
+}

@@ -73,6 +73,11 @@ variable or secret-manager name instead.
 - Do not run `git commit`, `git checkout`, `git switch`, `git branch`,
   `git rebase`, `git reset`, `git stash`, `git worktree`, or `git push`.
 - Do not stage files. Hop captures every nonignored workspace change.
+- Never create, rotate, enumerate, revoke, or paste account access tokens
+  through a provider website or API. For release or publishing work, use only a
+  credential the user has already provisioned in an OS secret store or supplied
+  through the runtime's secret mechanism. If it is missing, stop and ask the
+  user to provision it; do not call a token-management endpoint.
 - Give a subagent project-changing work only after creating a distinct Hop
   prompt/attempt for that delegation.
 - Never discard either side of concurrent work. Let Hop perform its three-way

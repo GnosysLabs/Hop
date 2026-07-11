@@ -38,7 +38,9 @@ public key independently. Checksum signing is listed as a launch gate in the
 Release builds execute on a maintainer machine, not on the Gitea server. Use a
 trusted, patched machine; keep the release token out of shell history and source
 files; scope it to the Hop repository; export it only for the publish command;
-and unset it immediately afterward. Releases upload as drafts for review.
+and unset it immediately afterward. Releases upload as drafts for review. The
+token must be provisioned by the user outside the agent session: Hop and its
+agents never create, rotate, list, or revoke provider account tokens.
 
 ## Filesystem safety
 

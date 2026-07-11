@@ -33,7 +33,7 @@ done
 
 if [ "$mode" = --publish ]; then
   [ -f LICENSE ] || fail "LICENSE is required before publishing"
-  [ -n "${GITEA_TOKEN:-}" ] || fail "set a scoped GITEA_TOKEN in the local environment"
+  [ -n "${GITEA_TOKEN:-}" ] || fail "provide a pre-existing scoped GITEA_TOKEN through the local secret store"
   [ -z "$(git status --porcelain)" ] || fail "the Git worktree must be clean"
   tag=$(git describe --tags --exact-match HEAD 2>/dev/null) ||
     fail "HEAD must have an exact release tag"
