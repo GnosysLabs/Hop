@@ -1,18 +1,27 @@
 # Getting started
 
-## Use Hop from Codex Desktop
+## Use Hop with an agent integration
 
 1. [Install Hop](Installation).
-2. Restart Codex Desktop if it was already open.
-3. Select an existing Git project as the Codex working directory.
-4. Ask Codex to make a normal change.
+2. Select an existing Git project in a compatible agent client, or make it the
+   controller's working directory.
+3. Ask the agent to make a normal change.
 
 That is the full user workflow. Do not manually create `.hop`, route the prompt
-through a terminal, or tell Codex to work inside `.hop/workspaces`. The Hop skill
-does that coordination for the agent.
+through a terminal, or tell the agent to work inside `.hop/workspaces`. A Hop
+integration does that coordination for the agent.
 
-The skill is eligible for implicit activation on every repository task. Mention
-`$hop` in the task if you want deterministic explicit activation.
+Without `--path`, `hop skill install` writes the same Hop-managed skill files to
+`~/.agents/skills/hop` and `${CODEX_HOME:-~/.codex}/skills/hop`. Compatible
+runtimes can use the shared bundle. An explicit `--path` installs only to the
+requested skills directory.
+
+### Codex Desktop example
+
+Restart Codex Desktop after installing or upgrading the skill, select a Git
+project, and ask Codex to work normally. The skill is eligible for implicit
+activation on every repository task; mention `$hop` for deterministic explicit
+activation.
 
 ## What happens on the first task
 
@@ -37,7 +46,7 @@ hop history
 hop doctor
 ```
 
-A normal Desktop result reports `Root: synchronized`.
+A normal interactive result reports `Root: synchronized`.
 
 ## Ask for review before landing
 
@@ -48,9 +57,10 @@ local code change. To stop at a proposal, say one of the following in the task:
 - `proposal only`
 - `do not land`
 
-## Use another agent runtime
+## Connect another agent runtime
 
-Install the embedded skill into that runtime's skills directory:
+If a compatible runtime does not read `~/.agents/skills`, install the embedded
+bundle into that runtime's skills directory:
 
 ```bash
 hop skill install --path /path/to/agent/skills --force

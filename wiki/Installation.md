@@ -16,7 +16,11 @@ The installer:
 3. downloads `checksums.txt` and verifies SHA-256 before extraction;
 4. installs the CLI to `~/.local/bin/hop`;
 5. adds `~/.local/bin` to `.zprofile` or `.profile` when necessary; and
-6. runs `hop skill install --force` for Codex.
+6. runs `hop skill install --force` to install the bundled agent integration.
+
+The no-path skill command writes the same Hop-managed skill files to
+`~/.agents/skills/hop` and `${CODEX_HOME:-~/.codex}/skills/hop`. The second path
+supports Codex Desktop; compatible clients can use the shared `.agents` path.
 
 Review before execution:
 
@@ -32,7 +36,7 @@ Installer options are environment variables:
 |---|---|---|
 | `HOP_VERSION` | `latest` | Release tag such as `v0.1.0` |
 | `HOP_INSTALL_DIR` | `~/.local/bin` | Binary destination |
-| `HOP_INSTALL_SKILL` | `1` | Set to `0` to skip Codex skill installation |
+| `HOP_INSTALL_SKILL` | `1` | Set to `0` for a CLI-only or custom integration |
 | `HOP_MODIFY_PATH` | `1` | Set to `0` to leave shell profiles unchanged |
 | `HOP_GITEA_URL` | `https://githop.xyz` | Gitea instance base URL |
 | `HOP_REPOSITORY` | `GnosysLabs/Hop` | Alternate Gitea owner/repository |
@@ -52,15 +56,15 @@ irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
 ```
 
 The script verifies the Windows archive, installs to
-`%LOCALAPPDATA%\Programs\Hop`, updates the user PATH, and installs the Codex
-skill. To pin a version after downloading the script:
+`%LOCALAPPDATA%\Programs\Hop`, updates the user PATH, and installs the shared and
+Codex-compatible skill bundles. To pin a version after downloading the script:
 
 ```powershell
 .\install.ps1 -Version v0.1.0
 ```
 
-Use `-SkipSkill` only when another agent runtime will receive the skill. Use
-`-SkipPath` when another tool manages your PATH.
+Use `-SkipSkill` for a CLI-only or separately managed integration. Use `-SkipPath`
+when another tool manages your PATH.
 
 ## Go install
 
@@ -71,7 +75,8 @@ go install githop.xyz/GnosysLabs/Hop/cmd/hop@latest
 hop skill install --force
 ```
 
-Put `$(go env GOPATH)/bin` on PATH if `hop` is not found.
+Put `$(go env GOPATH)/bin` on PATH if `hop` is not found. The second command
+installs both default skill bundles; omit it for a CLI-only installation.
 
 ## Build from source
 
@@ -87,6 +92,12 @@ install -m 755 hop "$HOME/.local/bin/hop"
 
 Source builds are intended for contributors and as a pre-release fallback.
 
+To install only one compatible runtime target, pass its parent skills directory:
+
+```bash
+hop skill install --path /path/to/agent/skills --force
+```
+
 ## Verify
 
 ```bash
@@ -95,5 +106,5 @@ hop help
 git --version
 ```
 
-If Codex Desktop was open during installation, restart it. See
+Restart any agent client that was open while its skill bundle changed. See
 [Getting started](Getting-Started) next.

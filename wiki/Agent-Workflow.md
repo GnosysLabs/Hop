@@ -1,14 +1,24 @@
-# Codex Desktop and agent workflow
+# Agent integrations and workflow
 
-## Codex Desktop
+## Skill-based integration
 
-Users type into Codex normally. The installed skill makes prompt capture the
-agent's first repository action:
+A compatible agent skill makes prompt capture the agent's first repository
+action. The integration supplies a stable agent and session identity. In a
+POSIX shell:
 
 ```bash
-hop begin --agent codex --heredoc <<'HOP_PROMPT_EOF'
+hop begin --agent my-agent --session stable-session-id --heredoc <<'HOP_PROMPT_EOF'
 <exact visible user message>
 HOP_PROMPT_EOF
+```
+
+In PowerShell:
+
+```powershell
+$hopPrompt = @'
+<exact visible user message>
+'@
+$hopPrompt | hop begin --agent my-agent --session stable-session-id --heredoc
 ```
 
 The agent adopts the returned `HOP_STATE_ID`, `HOP_TASK_ID`,
@@ -26,15 +36,22 @@ hop land R_... -- go test ./...
 No second landing authorization is requested unless the user explicitly asks
 for review-first behavior.
 
-Desktop capture stores the agent's verbatim transcription of the visible
-message and its attachment references. Because the skill runs after Codex
+Skill-based capture stores the agent's verbatim transcription of the visible
+message and its attachment references. Because the skill runs after the client
 receives the message, it cannot prove byte-for-byte fidelity with the raw
 submission. A trusted prompt-submission hook or controller is the deterministic
 capture boundary.
 
+### Codex Desktop example
+
+The bundled Codex integration uses `CODEX_THREAD_ID` as its stable session key,
+defaults the agent name to `codex`, and lets the user type normally. Its bundle
+is installed at `${CODEX_HOME:-~/.codex}/skills/hop`; the same files are also
+installed at `~/.agents/skills/hop` for compatible clients.
+
 ## Follow-up messages
 
-A later `hop begin` with the same Codex task session checkpoints existing
+A later `hop begin` with the same integration session checkpoints existing
 workspace effects, appends a new prompt state, and continues the same attempt
 while that work remains unfinished. If Hop prepares reconciliation, the session
 follows its fresh workspace. After the result lands, the next prompt starts a
@@ -60,8 +77,8 @@ follow-ups use:
 hop prompt --from P_... --heredoc
 ```
 
-This provides a stronger pre-delivery boundary than a Desktop skill, which can
-only guarantee capture before project effects.
+This provides a stronger pre-delivery boundary than an agent-side skill, which
+can only guarantee capture before project effects.
 
 ## Agent rules
 

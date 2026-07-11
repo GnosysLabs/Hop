@@ -73,11 +73,14 @@ try {
 
     if (-not $SkipSkill) {
         & $installedBinary skill install --force
+        if ($LASTEXITCODE -ne 0) {
+            throw "Hop skill installation failed with exit code $LASTEXITCODE"
+        }
     }
     Write-Host "Installed $(& $installedBinary version)"
     Write-Host "Binary: $installedBinary"
     if (-not $SkipSkill) {
-        Write-Host "Restart Codex if it is open, then use it normally in any Git repository."
+        Write-Host "Restart any open agent application, then use it normally in any Git repository."
     }
 } finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tempDir

@@ -10,7 +10,7 @@ visible project folder.
 - [Installation](Installation)
 - [Getting started](Getting-Started)
 - [Core concepts](Core-Concepts)
-- [Codex Desktop and agent workflow](Agent-Workflow)
+- [Agent integrations and workflow](Agent-Workflow)
 - [Parallel agents and conflict resolution](Parallel-Agents-and-Conflicts)
 
 ## Reference and operations
@@ -36,9 +36,10 @@ Windows PowerShell:
 irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
 ```
 
-Restart Codex Desktop, open a Git project, and ask Codex to work normally. The
-installed skill activates Hop before the agent inspects or changes the project;
-there is no separate prompt router and no required manual `hop init` step.
+Open a Git project in a compatible agent client and work normally. The installed
+skill bundle activates Hop before the agent inspects or changes the project;
+controllers can invoke the same protocol directly. Codex Desktop is a bundled
+integration, and there is no required manual `hop init` step.
 
 Hop is currently an alpha. Keep Git history and normal backups, read release
 notes before upgrading, and report unexpected behavior with `hop doctor` output

@@ -34,12 +34,16 @@ Prompt, checkpoint, and proposal states may reference identical Git trees while 
 | `HOP_TASK_ID` | Logical task grouping related prompts and attempts |
 | `HOP_ATTEMPT_ID` | Current agent approach/run |
 | `HOP_WORKSPACE` | Only directory the agent may modify |
+| `HOP_AGENT` | Optional runtime name used by `hop begin` when `--agent` is omitted |
 
 Interactive agents may begin without these variables. `hop begin` returns the
-equivalent IDs and workspace, while `CODEX_THREAD_ID` binds later messages in
-the same Codex task to unfinished work. Follow-ups before acceptance continue
-the attempt; the first prompt after acceptance starts a fresh task and attempt
-at the latest accepted state.
+equivalent IDs and workspace. Integrations should identify themselves with
+`HOP_AGENT` or `--agent` and pass a stable `--session` value when available.
+That session binds later messages to unfinished work; without it, each
+invocation begins independent work. The Codex adapter uses `CODEX_THREAD_ID` as
+the default session and `codex` as the default runtime name. Follow-ups before
+acceptance continue the attempt; the first prompt after acceptance starts a
+fresh task and attempt at the latest accepted state.
 
 ## Command contract
 
@@ -61,10 +65,26 @@ hop undo
 
 ### Agent
 
+POSIX shell:
+
 ```bash
-hop begin --agent codex --heredoc <<'HOP_PROMPT_EOF'
+hop begin --heredoc <<'HOP_PROMPT_EOF'
 <exact current user message>
 HOP_PROMPT_EOF
+```
+
+PowerShell:
+
+```powershell
+$hopPrompt = @'
+<exact current user message>
+'@
+$hopPrompt | hop begin --heredoc
+```
+
+Then continue in the returned workspace:
+
+```bash
 hop state "$HOP_STATE_ID" --json
 hop status --json
 hop check "$HOP_STATE_ID" -- <command>
@@ -72,6 +92,11 @@ hop propose --summary "<summary>" "$HOP_STATE_ID"
 hop land <proposal-state> -- <final validation command>
 hop refresh <proposal-state>
 ```
+
+An adapter may set `HOP_AGENT=<runtime>` or pass `--agent <runtime>`. If it has
+a stable conversation/run identifier, it should also pass `--session <id>` on
+every `hop begin`. Codex normally needs neither explicit flag because
+`CODEX_THREAD_ID` supplies its session adapter automatically.
 
 `hop check` snapshots the attempt and runs the command in a detached worktree materialized from that exact checkpoint. Edits made concurrently in the live workspace do not change the tested tree.
 
@@ -85,13 +110,13 @@ unresolved product ambiguity, or newly required destructive/external scope
 stops automatic acceptance. Path overlap and a stale accepted head do not:
 Hop merges, retries, or prepares agent reconciliation.
 
-`hop land` is the Desktop operation. It performs a real Git three-way content
-merge, so compatible edits in the same file and identical changes compose
-automatically. It validates and advances accepted state, then safely
-materializes that tree into the selected visible project root. The root must
-still match an accepted Hop ancestor, and ignored or untracked destination
-collisions block before acceptance. Materialization uses a disposable index and
-never moves HEAD, the active branch, or the user's real index.
+`hop land` is the interactive working-root operation. It performs a real Git
+three-way content merge, so compatible edits in the same file and identical
+changes compose automatically. It validates and advances accepted state, then
+safely materializes that tree into the selected visible project root. The root
+must still match an accepted Hop ancestor, and ignored or untracked destination
+collisions block before acceptance. Materialization uses a disposable index
+and never moves HEAD, the active branch, or the user's real index.
 
 When the three-way merge has genuine unresolved conflicts, `hop land` returns
 exit `20` and automatically prepares a reconciliation prompt in the original
@@ -110,13 +135,16 @@ explicit form of the same preparation step.
 `hop sync` safely catches a stale accepted-ancestor root up to the current
 accepted state, including projects created with older Hop builds.
 
-`hop begin` is the Codex Desktop entry point. It initializes Hop when necessary,
-captures the current message before the agent performs project work, and uses
-`CODEX_THREAD_ID` as the default session key. A later `hop begin` in the same
-Codex task checkpoints the prior workspace before appending a follow-up while
-that work remains unfinished. Reconciliation transfers the session to its fresh
-attempt. After a proposal is accepted, the next `hop begin` starts from the
-latest accepted state and never reopens the completed workspace.
+`hop begin` is the interactive-agent entry point. It initializes Hop when
+necessary and captures the current message before the agent performs project
+work. Runtime adapters identify themselves through `HOP_AGENT` or `--agent`
+and use `--session` to supply a stable conversation/run key. A later
+`hop begin` with the same session checkpoints the prior workspace before
+appending a follow-up while that work remains unfinished. Reconciliation
+transfers the session to its fresh attempt. After a proposal is accepted, the
+next `hop begin` starts from the latest accepted state and never reopens the
+completed workspace. Codex Desktop supplies `CODEX_THREAD_ID` as its default
+session key, so its adapter does not need to add `--session` explicitly.
 
 Pass the original message to `hop begin` without model-side redaction. Hop's
 sanitizer replaces detected credential values before any durable write and
@@ -139,19 +167,20 @@ A failed `hop check` or final landing check persists its evidence. A blocked or 
 
 ## Capture modes
 
-### Codex Desktop skill
+### Interactive agent skill
 
-The user types normally in Codex Desktop. The Hop skill makes `hop begin` its
-first project action and then directs every operation into the returned
-workspace. This is a pre-project-effect boundary: Codex has already received
-the prompt, but no repository inspection, command, or modification may precede
-the durable prompt state.
+The user types normally in their agent interface. The Hop skill makes
+`hop begin` its first project action and then directs every operation into the
+returned workspace. This is a pre-project-effect boundary: the runtime has
+already received the prompt, but no repository inspection, command, or
+modification may precede the durable prompt state. Codex Desktop is one such
+adapter; it provides session continuity through `CODEX_THREAD_ID`.
 
 ### Controller-grade pre-delivery capture
 
 ```bash
 hop init
-hop start --agent codex "Add password reset emails"
+hop start --agent <runtime> "Add password reset emails"
 ```
 
 Use the returned workspace and environment to launch the agent. For example, conceptually:

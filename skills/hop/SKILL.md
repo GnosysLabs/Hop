@@ -1,6 +1,6 @@
 ---
 name: hop
-description: Capture local repository prompts as Hop states and perform agent work in isolated Hop workspaces. Use at the start of every Codex Desktop or CLI repository turn and follow-up, before inspecting files, running project commands, editing, reviewing, delegating, landing, or undoing—even when the user does not mention Hop. Also use whenever HOP_STATE_ID, HOP_TASK_ID, HOP_ATTEMPT_ID, CODEX_THREAD_ID, or .hop/hop.db is present.
+description: Capture local repository prompts as Hop states and perform agent work in isolated Hop workspaces. Use at the start of every interactive coding-agent repository turn and follow-up, before inspecting files, running project commands, editing, reviewing, delegating, landing, or undoing—even when the user does not mention Hop. Also use whenever HOP_STATE_ID, HOP_TASK_ID, HOP_ATTEMPT_ID, HOP_AGENT, CODEX_THREAD_ID, or .hop/hop.db is present.
 ---
 
 # Hop
@@ -11,25 +11,45 @@ returned Hop workspace.
 ## Capture the current prompt first
 
 Do not inspect repository files, plan from repository contents, run project
-commands, edit, or delegate before capture. Run this from the selected project
-directory:
+commands, edit, or delegate before capture. Run the form for the current shell
+from the selected project directory.
+
+POSIX shell:
 
 ```bash
-hop begin --agent codex --heredoc <<'HOP_PROMPT_EOF'
+hop begin --heredoc <<'HOP_PROMPT_EOF'
 <copy the current user message verbatim>
 HOP_PROMPT_EOF
 ```
 
-Choose a different quoted delimiter if that exact delimiter appears in the
-message. Include visible attachment paths and references. Do not paraphrase,
-pre-redact, or omit a suspected credential in this one capture stream; Hop must
-see it to replace it deterministically before persistence. `--heredoc` removes
-only the shell-added final newline. Never copy the credential anywhere else.
+PowerShell:
 
-`hop begin` performs the Desktop bootstrap:
+```powershell
+$hopPrompt = @'
+<copy the current user message verbatim>
+'@
+$hopPrompt | hop begin --heredoc
+```
+
+Choose a different non-interpolating stdin construction if the applicable
+terminator appears in the message. Include visible attachment paths and
+references. Do not paraphrase, pre-redact, or omit a suspected credential in
+this one capture stream; Hop must see it to replace it deterministically before
+persistence. `--heredoc` removes only the shell-added final newline. Never copy
+the credential anywhere else.
+
+An integration may identify its runtime through `HOP_AGENT` or `--agent`, and
+should pass a stable `--session` value when it has one. A stable session lets
+Hop connect unfinished follow-ups without making the user carry state IDs.
+Codex is one adapter example: when `CODEX_THREAD_ID` is present, `hop begin`
+uses it as the default session and identifies the runtime as `codex` unless
+`HOP_AGENT` or `--agent` overrides that name.
+
+`hop begin` performs the interactive-agent bootstrap:
 
 - Initialize Hop automatically when the project has not used it before.
-- Use `CODEX_THREAD_ID` to bind this Codex task to its unfinished Hop work.
+- Use the integration's stable session identity to bind later messages to
+  unfinished Hop work. Without one, each invocation begins independent work.
 - Create a prompt state and isolated workspace on the first turn.
 - Checkpoint prior workspace effects and append follow-ups until that work lands.
 - Follow a reconciliation into its fresh attempt, then start the first prompt
@@ -149,10 +169,11 @@ safe continuation needs new user authority.
 If visible-root synchronization is blocked, do not bypass it with `hop accept`,
 force checkout, reset, or file copying. Preserve the proposal and identify the
 user-owned paths that must be resolved. `hop accept` is reserved for an
-explicitly controller-only workflow; Desktop work always uses `hop land`.
+explicitly controller-only workflow; interactive agent work uses `hop land`.
 Use `hop undo` only after a separately captured, explicit user request.
 
 Read [references/protocol.md](references/protocol.md) for state semantics, exit
 codes, recovery, and controller-grade pre-delivery capture. Skill-driven
-Desktop capture is a pre-project-effect boundary; it does not claim the prompt
-was stored before Codex received it.
+interactive capture is a pre-project-effect boundary; it does not claim the
+prompt was stored before the runtime received it. On Codex Desktop, for
+example, Codex has already received the prompt before this skill can run.

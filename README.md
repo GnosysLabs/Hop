@@ -30,9 +30,11 @@ and safe multi-agent integration.
 prompt → durable intent → isolated agent work → validate + merge → accepted code
 ```
 
-You keep using Codex Desktop normally. The installed Hop skill handles this
-lifecycle for the agent—there is no prompt wrapper, special app, or manual
-branch workflow.
+Hop ships an open [Agent Skills](https://agentskills.io/) bundle and a controller
+protocol. The skill makes prompt capture the agent's first repository action; a
+controller can capture before model delivery. Both use the same state,
+workspace, validation, reconciliation, and landing protocol. Codex Desktop is
+one bundled integration, not a boundary of the product.
 
 ## Install
 
@@ -50,20 +52,27 @@ curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh 
 irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
 ```
 
-The installer adds both the Hop CLI and its Codex skill. For source builds,
-version pinning, custom locations, and verification, see the
+The installer adds the Hop CLI and writes the same embedded skill version to
+`~/.agents/skills/hop` and `${CODEX_HOME:-~/.codex}/skills/hop`. For CLI-only
+installation, source builds, version pinning, custom locations, and
+verification, see the
 [installation guide](https://githop.xyz/GnosysLabs/Hop/wiki/Installation).
 
 ## Get started
 
 1. Install Hop.
-2. Restart Codex Desktop if it was already open.
-3. Open a Git project in Codex Desktop.
-4. Ask Codex to make a change as you normally would.
+2. Open a Git project in an Agent Skills-compatible client, or make it the
+   controller's working directory.
+3. Ask the agent to make a change as you normally would.
 
 That is the full user workflow. You do not run `hop init`, route prompts through
 a terminal, or work inside `.hop` yourself. After a task, `hop status` shows the
 accepted state and whether the visible project folder is synchronized.
+
+For example, Codex Desktop users restart Codex after installation, select a Git
+project, and prompt normally. Other compatible runtimes can read the shared
+skill bundle or receive a single-target installation with the explicit
+`hop skill install --path /path/to/agent/skills --force` form.
 
 Hop is currently an early alpha. Expect its state model and CLI to evolve before
 1.0.

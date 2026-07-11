@@ -1,8 +1,10 @@
 package hop
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -15,6 +17,9 @@ func TestInstallSkillBundle(t *testing.T) {
 	}
 	if result.Path != filepath.Join(base, "hop") {
 		t.Fatalf("skill path = %s", result.Path)
+	}
+	if len(result.Paths) != 1 || result.Paths[0] != result.Path {
+		t.Fatalf("skill paths = %#v, want only %s", result.Paths, result.Path)
 	}
 	wantFiles := []string{"SKILL.md", "agents/openai.yaml", "references/protocol.md"}
 	for _, relative := range wantFiles {
@@ -31,7 +36,7 @@ func TestInstallSkillBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(metadata), "allow_implicit_invocation: true") {
-		t.Fatal("installed skill does not permit Desktop implicit invocation")
+		t.Fatal("installed OpenAI metadata does not permit implicit invocation")
 	}
 	skill, err := os.ReadFile(filepath.Join(result.Path, "SKILL.md"))
 	if err != nil {
@@ -58,15 +63,163 @@ func TestInstallSkillBundle(t *testing.T) {
 	}
 }
 
+func TestInstallDefaultSkillsWritesSharedAndCodexBundles(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex-home")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	result, err := InstallDefaultSkills(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexTarget := filepath.Join(codexHome, "skills", "hop")
+	sharedTarget := filepath.Join(home, ".agents", "skills", "hop")
+	if result.Path != codexTarget {
+		t.Fatalf("legacy primary path = %s, want %s", result.Path, codexTarget)
+	}
+	wantPaths := []string{codexTarget, sharedTarget}
+	if len(result.Paths) != len(wantPaths) {
+		t.Fatalf("default paths = %#v, want %#v", result.Paths, wantPaths)
+	}
+	for index, want := range wantPaths {
+		if result.Paths[index] != want {
+			t.Fatalf("default path %d = %s, want %s", index, result.Paths[index], want)
+		}
+	}
+	codexSkill, err := os.ReadFile(filepath.Join(codexTarget, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedSkill, err := os.ReadFile(filepath.Join(sharedTarget, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(codexSkill, sharedSkill) {
+		t.Fatal("default skill bundles differ")
+	}
+}
+
+func TestInstallDefaultSkillsPreflightsAndDeduplicates(t *testing.T) {
+	t.Run("preflight", func(t *testing.T) {
+		home := t.TempDir()
+		codexHome := filepath.Join(home, "codex-home")
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("CODEX_HOME", codexHome)
+		codexTarget := filepath.Join(codexHome, "skills", "hop")
+		if err := os.MkdirAll(codexTarget, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		unknown := filepath.Join(codexTarget, "user-note.txt")
+		if err := os.WriteFile(unknown, []byte("keep me"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := InstallDefaultSkills(false); err == nil || !strings.Contains(err.Error(), "--force") {
+			t.Fatalf("default preflight error = %v", err)
+		}
+		sharedTarget := filepath.Join(home, ".agents", "skills", "hop")
+		if _, err := os.Stat(sharedTarget); !os.IsNotExist(err) {
+			t.Fatalf("partial shared install exists after preflight failure: %v", err)
+		}
+		if _, err := InstallDefaultSkills(true); err != nil {
+			t.Fatal(err)
+		}
+		if contents, err := os.ReadFile(unknown); err != nil || string(contents) != "keep me" {
+			t.Fatalf("force install removed unknown file: %q, %v", string(contents), err)
+		}
+	})
+
+	t.Run("nested symlink", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation requires additional privileges on Windows")
+		}
+		home := t.TempDir()
+		codexHome := filepath.Join(home, "codex-home")
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("CODEX_HOME", codexHome)
+		sharedTarget := filepath.Join(home, ".agents", "skills", "hop")
+		if err := os.MkdirAll(sharedTarget, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(home, "outside")
+		if err := os.WriteFile(outside, []byte("do not overwrite"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(sharedTarget, "SKILL.md")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := InstallDefaultSkills(true); err == nil || !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("nested symlink preflight error = %v", err)
+		}
+		codexTarget := filepath.Join(codexHome, "skills", "hop")
+		if _, err := os.Stat(codexTarget); !os.IsNotExist(err) {
+			t.Fatalf("partial Codex install exists after nested preflight failure: %v", err)
+		}
+		if contents, err := os.ReadFile(outside); err != nil || string(contents) != "do not overwrite" {
+			t.Fatalf("nested symlink target changed: %q, %v", contents, err)
+		}
+	})
+
+	t.Run("dangling parent symlink", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation requires additional privileges on Windows")
+		}
+		home := t.TempDir()
+		codexHome := filepath.Join(home, "codex-home")
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("CODEX_HOME", codexHome)
+		if err := os.Symlink(filepath.Join(home, "missing-agents-home"), filepath.Join(home, ".agents")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := InstallDefaultSkills(true); err == nil || !strings.Contains(err.Error(), "ancestor") {
+			t.Fatalf("dangling parent preflight error = %v", err)
+		}
+		codexTarget := filepath.Join(codexHome, "skills", "hop")
+		if _, err := os.Stat(codexTarget); !os.IsNotExist(err) {
+			t.Fatalf("partial Codex install exists after dangling-parent failure: %v", err)
+		}
+	})
+
+	t.Run("deduplicate", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("CODEX_HOME", filepath.Join(home, ".agents"))
+		result, err := InstallDefaultSkills(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Paths) != 1 {
+			t.Fatalf("aliased default paths were not deduplicated: %#v", result.Paths)
+		}
+	})
+}
+
 func TestSkillCLIWorksOutsideHopProject(t *testing.T) {
 	var stdout, stderr strings.Builder
-	base := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex-home"))
+	base := filepath.Join(home, "custom-skills")
 	code := RunCLI([]string{"skill", "install", "--path", base, "--json"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("skill install exited %d: %s", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), filepath.Join(base, "hop")) {
 		t.Fatalf("skill install JSON omitted target: %s", stdout.String())
+	}
+	for _, unexpected := range []string{
+		filepath.Join(home, ".agents", "skills", "hop"),
+		filepath.Join(home, "codex-home", "skills", "hop"),
+	} {
+		if _, err := os.Stat(unexpected); !os.IsNotExist(err) {
+			t.Fatalf("explicit --path also installed default target %s: %v", unexpected, err)
+		}
 	}
 	stdout.Reset()
 	stderr.Reset()

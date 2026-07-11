@@ -22,9 +22,10 @@ different moments and causal roles.
 
 A task groups the prompts and attempts pursuing one user outcome. Follow-up
 messages pursuing unfinished work stay connected automatically through
-`CODEX_THREAD_ID`. Once that outcome is accepted, the next message starts a new
-Hop task at the latest accepted state even when the Codex conversation stays
-open.
+a stable session ID supplied by the integration. Codex Desktop supplies
+`CODEX_THREAD_ID` automatically. Once that outcome is accepted, the next message
+starts a new Hop task at the latest accepted state even when the client
+conversation stays open.
 
 ## Attempt and workspace
 
@@ -54,7 +55,7 @@ state but intentionally leaves the visible folder unchanged.
 
 ## Visible root
 
-The visible root is the project directory selected in Codex. Hop only
-materializes into it when it still matches an accepted Hop ancestor. Untracked,
-ignored, staged, or ordinary file divergence that could be overwritten causes a
-fail-closed error.
+The visible root is the project directory selected in an agent client or passed
+as the controller's working directory. Hop only materializes into it when it
+still matches an accepted Hop ancestor. Untracked, ignored, staged, or ordinary
+file divergence that could be overwritten causes a fail-closed error.

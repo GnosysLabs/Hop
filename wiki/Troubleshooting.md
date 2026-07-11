@@ -13,14 +13,16 @@ printf '%s\n' "$PATH"
 The default Unix location is `~/.local/bin`. On Windows it is
 `%LOCALAPPDATA%\Programs\Hop`.
 
-## Codex does not activate Hop
+## An agent integration does not activate Hop
 
 ```bash
 hop skill install --force
 ```
 
-Restart Codex Desktop. Mention `$hop` in a task as a deterministic activation
-fallback.
+The command refreshes both default skill bundles. Restart the agent client. For
+Codex Desktop, mention `$hop` in a task as a deterministic activation fallback.
+For another compatible runtime, confirm that it reads `~/.agents/skills` or run
+`hop skill install --path /path/to/agent/skills --force`.
 
 ## The installer cannot find a release
 
@@ -55,7 +57,7 @@ workspace, and rerun the check.
 
 Hop found visible files or index state it will not overwrite. Preserve those
 changes. Capture them as a new Hop task or resolve them intentionally, then
-retry `hop land`. Do not bypass this with `hop accept` in Desktop workflows.
+retry `hop land`. Do not bypass this with `hop accept` in interactive workflows.
 
 ## Internal ref or object warning
 

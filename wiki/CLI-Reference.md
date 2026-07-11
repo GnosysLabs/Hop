@@ -18,7 +18,7 @@ release.
 | Command | Purpose |
 |---|---|
 | `hop init [path]` | Initialize Hop without moving the Git branch or index |
-| `hop begin ...` | Desktop entry point: initialize if needed, capture prompt, continue session |
+| `hop begin ...` | Interactive-agent entry point: initialize if needed, capture prompt, continue session |
 | `hop prompt ...` | Controller-managed prompt or follow-up capture |
 | `hop checkpoint STATE` | Freeze current attempt progress |
 | `hop check STATE -- COMMAND...` | Validate an immutable checkpoint |
@@ -49,15 +49,16 @@ release.
 | `hop history` | Accepted lineage |
 | `hop version` | Installed version |
 
-## Skill distribution
+## Agent integration bundle
 
 ```bash
 hop skill install [--path SKILLS_DIR] [--force]
 hop skill print
 ```
 
-Without `--path`, the skill installs under
-`${CODEX_HOME:-~/.codex}/skills/hop`.
+Without `--path`, Hop installs the same Hop-managed skill files at
+`~/.agents/skills/hop` and `${CODEX_HOME:-~/.codex}/skills/hop`. With `--path`,
+it installs only to `SKILLS_DIR/hop`.
 
 ## Exit codes
 

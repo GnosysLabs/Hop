@@ -103,5 +103,5 @@ fi
 printf 'Installed %s\n' "$("$install_dir/hop" version)"
 printf 'Binary: %s\n' "$install_dir/hop"
 if [ "$install_skill" = 1 ]; then
-  printf 'Restart Codex if it is open, then use it normally in any Git repository.\n'
+  printf 'Restart any open agent application, then use it normally in any Git repository.\n'
 fi

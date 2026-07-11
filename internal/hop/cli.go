@@ -528,14 +528,22 @@ func runSkillCLI(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
 		if err := fs.Parse(args[1:]); err != nil || len(fs.Args()) != 0 {
 			return 2
 		}
-		result, err := InstallSkill(*path, *force)
+		var result SkillInstallResult
+		var err error
+		if strings.TrimSpace(*path) == "" {
+			result, err = InstallDefaultSkills(*force)
+		} else {
+			result, err = InstallSkill(*path, *force)
+		}
 		if err != nil {
 			return printCLIError(err, jsonOutput, stdout, stderr)
 		}
 		if jsonOutput {
 			writeJSON(stdout, map[string]any{"ok": true, "data": result})
 		} else {
-			fmt.Fprintf(stdout, "Installed Hop skill at %s\n", result.Path)
+			for _, installedPath := range result.Paths {
+				fmt.Fprintf(stdout, "Installed Hop skill at %s\n", installedPath)
+			}
 		}
 		return 0
 	case "print":

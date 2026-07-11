@@ -40,7 +40,8 @@ scripts/release-local.sh --snapshot
 
 Inspect `dist/` and test at least one archive on each operating system family.
 Confirm `hop version` reports the snapshot/tag-injected version and
-`hop skill install --force` installs usable skill files.
+`hop skill install --force` installs identical Hop-managed files at both
+default skill destinations while preserving unrelated user files.
 
 ## Create a release
 

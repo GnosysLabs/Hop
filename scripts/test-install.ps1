@@ -7,11 +7,16 @@ $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("hop-installer-test-" + 
 $fixtures = Join-Path $tempDir "fixtures"
 $payload = Join-Path $tempDir "payload"
 $installDir = Join-Path $tempDir "install"
+$testHome = Join-Path $tempDir "home"
+$testCodexHome = Join-Path $testHome ".codex"
 $testArch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -eq "Arm64") { "arm64" } else { "amd64" }
 $asset = "hop_windows_${testArch}.zip"
+$originalHome = $env:HOME
+$originalUserProfile = $env:USERPROFILE
+$originalCodexHome = $env:CODEX_HOME
 
 New-Item -ItemType Directory -Path $tempDir | Out-Null
-New-Item -ItemType Directory -Path $fixtures, $payload | Out-Null
+New-Item -ItemType Directory -Path $fixtures, $payload, $testHome | Out-Null
 try {
     $binary = Join-Path $payload "hop.exe"
     & go build -trimpath `
@@ -53,11 +58,14 @@ try {
         }
     }
 
+    $env:HOME = $testHome
+    $env:USERPROFILE = $testHome
+    $env:CODEX_HOME = $testCodexHome
+
     & (Join-Path $root "scripts/install.ps1") `
         -GiteaUrl "https://gitea.test" `
         -Repository "GnosysLabs/Hop" `
         -InstallDir $installDir `
-        -SkipSkill `
         -SkipPath
 
     $installed = Join-Path $installDir "hop.exe"
@@ -66,7 +74,67 @@ try {
     if ($LASTEXITCODE -ne 0 -or $version -ne "hop 9.9.9-installer-test") {
         throw "Unexpected installed version: $version"
     }
+
+    $sharedBundle = Join-Path $testHome ".agents\skills\hop"
+    $codexBundle = Join-Path $testCodexHome "skills\hop"
+    $sharedSkill = Join-Path $sharedBundle "SKILL.md"
+    $codexSkill = Join-Path $codexBundle "SKILL.md"
+    if (-not (Test-Path -LiteralPath $sharedSkill -PathType Leaf) -or (Get-Item -LiteralPath $sharedSkill).Length -eq 0) {
+        throw "Installer did not install the shared Hop skill"
+    }
+    if (-not (Test-Path -LiteralPath $codexSkill -PathType Leaf) -or (Get-Item -LiteralPath $codexSkill).Length -eq 0) {
+        throw "Installer did not install the Codex Hop skill"
+    }
+
+    function Get-BundleHashes {
+        param([Parameter(Mandatory)][string]$BundlePath)
+        $hashes = @{}
+        Get-ChildItem -LiteralPath $BundlePath -File -Recurse | ForEach-Object {
+            $relative = $_.FullName.Substring($BundlePath.Length).TrimStart(
+                [System.IO.Path]::DirectorySeparatorChar,
+                [System.IO.Path]::AltDirectorySeparatorChar
+            )
+            $hashes[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+        }
+        return $hashes
+    }
+
+    $sharedHashes = Get-BundleHashes $sharedBundle
+    $codexHashes = Get-BundleHashes $codexBundle
+    $sharedFiles = @($sharedHashes.Keys | Sort-Object)
+    $codexFiles = @($codexHashes.Keys | Sort-Object)
+    if ($sharedFiles.Count -eq 0 -or (Compare-Object -ReferenceObject $sharedFiles -DifferenceObject $codexFiles)) {
+        throw "Shared and Codex Hop skill bundles contain different files"
+    }
+    foreach ($relative in $sharedFiles) {
+        if ($sharedHashes[$relative] -ne $codexHashes[$relative]) {
+            throw "Shared and Codex Hop skill bundles differ at $relative"
+        }
+    }
+
+    $blockedCodexHome = Join-Path $testHome "blocked-codex"
+    $blockedSkills = Join-Path $blockedCodexHome "skills"
+    New-Item -ItemType Directory -Path $blockedSkills | Out-Null
+    "blocked" | Set-Content -Encoding ascii (Join-Path $blockedSkills "hop")
+    $env:CODEX_HOME = $blockedCodexHome
+    $installFailed = $false
+    try {
+        & (Join-Path $root "scripts/install.ps1") `
+            -GiteaUrl "https://gitea.test" `
+            -Repository "GnosysLabs/Hop" `
+            -InstallDir $installDir `
+            -SkipPath
+    } catch {
+        $installFailed = $true
+    }
+    if (-not $installFailed) {
+        throw "Installer did not fail when skill installation failed"
+    }
+    $env:CODEX_HOME = $testCodexHome
     Write-Host "PowerShell installer smoke test passed."
 } finally {
+    $env:HOME = $originalHome
+    $env:USERPROFILE = $originalUserProfile
+    $env:CODEX_HOME = $originalCodexHome
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tempDir
 }

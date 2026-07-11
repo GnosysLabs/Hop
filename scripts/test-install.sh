@@ -64,6 +64,7 @@ MOCK_CURL
 chmod 0755 "$tmp_dir/mock-bin/curl"
 
 HOME="$tmp_dir/home" \
+CODEX_HOME="$tmp_dir/home/.codex" \
 PATH="$tmp_dir/mock-bin:$PATH" \
 HOP_TEST_FIXTURES="$tmp_dir/fixtures" \
 HOP_GITEA_URL="https://gitea.test" \
@@ -77,7 +78,17 @@ version=$($tmp_dir/home/bin/hop version)
   printf 'unexpected installed version: %s\n' "$version" >&2
   exit 1
 }
-[ -s "$tmp_dir/home/.codex/skills/hop/SKILL.md" ] || {
-  printf 'installer did not install the embedded Hop skill\n' >&2
+shared_bundle="$tmp_dir/home/.agents/skills/hop"
+codex_bundle="$tmp_dir/home/.codex/skills/hop"
+[ -s "$shared_bundle/SKILL.md" ] || {
+  printf 'installer did not install the shared Hop skill\n' >&2
   exit 1
 }
+[ -s "$codex_bundle/SKILL.md" ] || {
+  printf 'installer did not install the Codex Hop skill\n' >&2
+  exit 1
+}
+if ! diff -r "$shared_bundle" "$codex_bundle" >/dev/null; then
+  printf 'shared and Codex Hop skill bundles differ\n' >&2
+  exit 1
+fi

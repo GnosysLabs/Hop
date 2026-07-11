@@ -25,7 +25,7 @@ mirrored at `refs/hop/accepted`.
 - prompt/task/attempt identity;
 - typed state edges and accepted lineage;
 - evidence tied to exact source trees;
-- session heads for Desktop follow-ups;
+- session heads for interactive-agent follow-ups;
 - materialized-root state; and
 - immutable audit events.
 
@@ -46,9 +46,9 @@ initialization when `.hop` is already tracked as user-owned project content.
 ## Acceptance consistency
 
 Acceptance is serialized and compare-and-swapped. SQLite is authoritative;
-derived Git refs can be repaired by `hop doctor --repair`. Desktop landing also
-tracks which accepted state is physically visible, allowing safe catch-up with
-`hop sync` without treating a divergent folder as disposable.
+derived Git refs can be repaired by `hop doctor --repair`. Visible-root landing
+also tracks which accepted state is physically visible, allowing safe catch-up
+with `hop sync` without treating a divergent folder as disposable.
 
 For the full product direction, read the
 [product blueprint](https://githop.xyz/GnosysLabs/Hop/src/branch/main/docs/product-blueprint.md).
