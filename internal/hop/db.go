@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 var (
 	ErrNotFound            = errors.New("hop: not found")
@@ -23,6 +23,7 @@ var (
 	ErrAlreadyInitialized  = errors.New("hop: repository is already initialized")
 	ErrAttemptHeadChanged  = errors.New("hop: attempt head changed")
 	ErrAcceptedHeadChanged = errors.New("hop: accepted head changed")
+	ErrMaterializedChanged = errors.New("hop: materialized head changed")
 )
 
 // HeadChangedError reports a failed compare-and-swap of an attempt or the
@@ -39,10 +40,14 @@ func (e *HeadChangedError) Error() string {
 }
 
 func (e *HeadChangedError) Unwrap() error {
-	if e.Scope == "accepted" {
+	switch e.Scope {
+	case "accepted":
 		return ErrAcceptedHeadChanged
+	case "materialized":
+		return ErrMaterializedChanged
+	default:
+		return ErrAttemptHeadChanged
 	}
-	return ErrAttemptHeadChanged
 }
 
 // Event is an immutable audit record. Payload is deliberately unstructured so
@@ -230,6 +235,17 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS agent_sessions_head_idx ON agent_sessions(head_state_id)`,
 		},
 	},
+	{
+		version: 3,
+		statements: []string{
+			`INSERT OR IGNORE INTO meta(key, value)
+			 SELECT 'materialized_head', id
+			 FROM states
+			 WHERE kind = 'accepted'
+			 ORDER BY created_at, id
+			 LIMIT 1`,
+		},
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -320,7 +336,11 @@ func (s *Store) CreateInitialState(ctx context.Context, root string, initial Sta
 	if err := insertStateTx(ctx, tx, initial, nil); err != nil {
 		return State{}, err
 	}
-	for key, value := range map[string]string{"root": filepath.Clean(root), "accepted_head": initial.ID} {
+	for key, value := range map[string]string{
+		"root":              filepath.Clean(root),
+		"accepted_head":     initial.ID,
+		"materialized_head": initial.ID,
+	} {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO meta(key, value) VALUES (?, ?)
 			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
@@ -782,6 +802,80 @@ func (s *Store) AcceptedHead(ctx context.Context) (State, error) {
 		return State{}, err
 	}
 	return s.GetState(ctx, id)
+}
+
+// AcceptedForProposal returns the immutable accepted child already created for
+// proposalID. It makes retry after a post-commit projection failure
+// idempotent instead of creating a second acceptance transition.
+func (s *Store) AcceptedForProposal(ctx context.Context, proposalID string) (State, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT p.state_id
+		 FROM state_parents p
+		 JOIN states s ON s.id = p.state_id
+		 WHERE p.parent_state_id = ? AND p.role = 'proposal_parent' AND s.kind = 'accepted'
+		 ORDER BY s.created_at, s.id
+		 LIMIT 1`, proposalID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, false, nil
+	}
+	if err != nil {
+		return State{}, false, fmt.Errorf("find accepted state for proposal %s: %w", proposalID, err)
+	}
+	state, err := s.GetState(ctx, id)
+	if err != nil {
+		return State{}, false, err
+	}
+	return state, true, nil
+}
+
+// MaterializedHead is the accepted state currently projected into the visible
+// project root. It may trail AcceptedHead after controller-only acceptance or
+// an interrupted post-acceptance synchronization.
+func (s *Store) MaterializedHead(ctx context.Context) (State, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'materialized_head'`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, ErrNotInitialized
+	}
+	if err != nil {
+		return State{}, fmt.Errorf("read materialized head: %w", err)
+	}
+	return s.GetState(ctx, id)
+}
+
+// CASMaterializedHead advances the recoverable visible-root projection marker.
+// Filesystem materialization must be verified before calling this method.
+func (s *Store) CASMaterializedHead(ctx context.Context, expectedID, nextID string) error {
+	if expectedID == "" || nextID == "" {
+		return errors.New("hop: expected and next materialized heads are required")
+	}
+	if expectedID == nextID {
+		return nil
+	}
+	next, err := s.GetState(ctx, nextID)
+	if err != nil {
+		return err
+	}
+	if next.Kind != StateAccepted {
+		return fmt.Errorf("hop: materialized head must be an accepted state, found %s", next.Kind)
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE meta SET value = ? WHERE key = 'materialized_head' AND value = ?`,
+		nextID, expectedID)
+	if err != nil {
+		return fmt.Errorf("advance materialized head: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect materialized head update: %w", err)
+	}
+	if rows != 1 {
+		var actual string
+		_ = s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'materialized_head'`).Scan(&actual)
+		return &HeadChangedError{Scope: "materialized", Expected: expectedID, Actual: actual}
+	}
+	return nil
 }
 
 func (s *Store) RepositoryRoot(ctx context.Context) (string, error) {

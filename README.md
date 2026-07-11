@@ -2,7 +2,7 @@
 
 Hop is an experimental prompt-native version-control kernel for coding agents.
 
-Every instruction becomes an immutable state before project effects. Agent work produces checkpoint and proposal states beneath it. Landing a proposal creates a new accepted state without moving the user’s Git branch or checkout. Controller integrations may capture the stronger pre-delivery boundary as well.
+Every instruction becomes an immutable state before project effects. Agent work produces checkpoint and proposal states beneath it. Landing a proposal creates a new accepted state and safely materializes it in the visible project folder without moving the user’s Git branch or real index. Controller integrations may capture the stronger pre-delivery boundary as well.
 
 ```text
 A0 accepted
@@ -31,6 +31,8 @@ This repository contains the first local alpha kernel. It supports:
 - Three-tree composition of disjoint proposals
 - Optional validation on the final integrated tree
 - Compare-and-swap acceptance
+- Safe visible-root materialization on Desktop landing
+- Controller-only internal acceptance plus explicit root synchronization
 - Forward-only undo of the latest accepted transition
 - Git-compatible accepted commits under `refs/hop/accepted`
 - SQLite WAL state graph and machine-readable JSON output
@@ -54,10 +56,11 @@ Hop skill's first action ──> hop begin ──> prompt state + workspace
                                       edit → check → propose
                                                 │
                                                 ▼
-Human                                  review → land → accepted state
+Agent                           validate → auto-land → accepted state
+                                                   → visible project root
 ```
 
-The user continues typing into Codex Desktop normally. The skill invokes `hop begin` before inspecting or changing the project. `hop begin` initializes Hop when needed, uses `CODEX_THREAD_ID` to recognize follow-ups, checkpoints prior effects, and returns the isolated workspace. The skill then confines work to that workspace. This is a pre-project-effect boundary: the prompt is stored after Codex receives it but before the agent performs project work. A controller or future trusted prompt hook can provide strict pre-delivery capture.
+The user continues typing into Codex Desktop normally. The skill invokes `hop begin` before inspecting or changing the project. `hop begin` initializes Hop when needed, uses `CODEX_THREAD_ID` to recognize follow-ups, checkpoints prior effects, and returns the isolated workspace. The skill confines work to that workspace, validates it, and automatically lands a successful proposal. `hop land` advances accepted state and then projects that exact tree into the selected folder. It proceeds only when the visible source still matches an accepted Hop state, so user edits are never overwritten. The original task prompt is the authorization; no extra landing prompt is required. Say `review first` or `proposal only` to opt into manual approval. This is a pre-project-effect boundary: the prompt is stored after Codex receives it but before the agent performs project work. A controller or future trusted prompt hook can provide strict pre-delivery capture.
 
 ## Build
 
@@ -94,7 +97,7 @@ The agent—not the user—runs this command. It initializes Hop without changin
 
 Codex chooses implicitly invoked skills from their descriptions. Explicitly mentioning `$hop` remains the deterministic fallback if a task does not activate it automatically.
 
-After the agent edits the printed workspace:
+After editing the printed workspace, the agent runs this lifecycle automatically:
 
 ```bash
 hop check P_... -- go test ./...
@@ -102,7 +105,17 @@ hop propose --summary "Added password reset emails" P_...
 hop land R_... -- go test ./...
 ```
 
-The command supplied to `land` runs in a temporary worktree containing the exact final tree that would become accepted. If it fails, `refs/hop/accepted` and the SQLite accepted head do not move.
+The command supplied to `land` runs in a temporary worktree containing the exact final tree that would become accepted. If it fails, `refs/hop/accepted` and the SQLite accepted head do not move. After acceptance, Hop updates only the visible working files through a disposable Git index; HEAD, the active branch, and the real index do not move. The agent pauses for an explicit review-first request, failed validation, proposal overlap, visible-root divergence, or newly required destructive/external scope.
+
+`land` and `accept` are intentionally different:
+
+```bash
+hop land R_... -- go test ./...   # Desktop: accept and synchronize the selected folder
+hop accept R_... -- go test ./... # Controller: accept internally, leave the folder untouched
+hop sync                          # Catch a stale visible folder up to accepted state
+```
+
+`hop sync` is also the upgrade path for projects accepted by an older Hop build. It synchronizes only when the folder still matches an accepted ancestor.
 
 Inspect the project:
 
@@ -112,6 +125,7 @@ hop graph
 hop state P_...
 hop diff R_...
 hop history
+hop sync
 hop doctor
 ```
 
@@ -177,7 +191,7 @@ Source objects are pinned beneath `refs/hop/states/*`, preventing Git garbage co
 └── accept.lock            short-lived acceptance serialization lock
 ```
 
-The repository’s `.git/info/exclude` receives `.hop/`; the public `.gitignore`, current branch, and real Git index are left alone.
+The repository’s `.git/info/exclude` receives `.hop/`; the public `.gitignore`, current branch, and real Git index are left alone. `hop land`, `hop sync`, and `hop undo` update visible source files only after confirming that the folder matches accepted Hop history.
 
 Initialization refuses to proceed if `.hop` is already tracked as user-owned project source.
 
@@ -203,7 +217,9 @@ The JSON shape is an alpha contract and may evolve before the first tagged relea
 
 ## Safety boundary
 
-Hop currently treats any shared changed path as a conflict. Disjoint files can still conflict behaviorally, so manual acceptance remains the default and final-tree validation is strongly recommended.
+Hop currently treats any shared changed path as a conflict. Disjoint files can still conflict behaviorally, so automatic acceptance reruns the strongest relevant validation on the exact final tree. Manual acceptance remains available as an explicit review-first mode.
+
+Desktop landing fails closed when nonignored visible source does not exactly match an accepted Hop state or when an ignored/untracked path would be overwritten. It never uses `reset --hard`, moves HEAD, or rewrites the user's real index. The lower-level `hop accept` command deliberately retains controller-only behavior and does not update the visible root.
 
 Agent-reported scope and test claims are never used as the source of truth. Hop computes source trees and changed paths itself.
 

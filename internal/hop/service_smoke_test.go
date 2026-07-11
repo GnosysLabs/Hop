@@ -82,6 +82,7 @@ func TestInitRefusesAUserTrackedHopDirectory(t *testing.T) {
 }
 
 func TestCLIJSONWorkflow(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
 	previousDirectory, err := os.Getwd()
@@ -112,15 +113,22 @@ func TestCLIJSONWorkflow(t *testing.T) {
 	if kind := stringField(t, acceptedState, "kind"); kind != string(StateAccepted) {
 		t.Fatalf("landed kind = %q, want %q", kind, StateAccepted)
 	}
+	if contents, err := os.ReadFile(filepath.Join(root, "cli.txt")); err != nil || string(contents) != "cli\n" {
+		t.Fatalf("visible root was not materialized: contents=%q err=%v", string(contents), err)
+	}
 	status := runCLIJSONTest(t, []string{"status", "--json"})
 	statusData := objectField(t, status, "data")
 	head := objectField(t, statusData, "accepted_head")
 	if stringField(t, head, "id") != stringField(t, acceptedState, "id") {
 		t.Fatal("status accepted head does not match landed state")
 	}
+	if stringField(t, statusData, "root_status") != "synchronized" {
+		t.Fatalf("root status = %q", stringField(t, statusData, "root_status"))
+	}
 }
 
 func TestCLIBeginAutoInitializesAndContinuesCodexSession(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
 	previousDirectory, err := os.Getwd()
@@ -546,6 +554,364 @@ func TestOverlappingProposalAndFailedFinalCheckDoNotMoveHead(t *testing.T) {
 	}
 }
 
+func TestLandMaterializesVisibleRootWithoutMovingGitState(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runGitTest(t, root, "init", "--quiet")
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	writeTestFile(t, filepath.Join(root, "remove.txt"), "remove\n")
+	runGitTest(t, root, "add", "base.txt", "remove.txt")
+	runGitTest(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "initial")
+
+	service, _, err := InitProject(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	started, err := service.CreatePrompt(ctx, "Materialize the result", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "base.txt"), "landed\n")
+	writeTestFile(t, filepath.Join(started.Workspace, "nested", "new.txt"), "new\n")
+	if err := os.Remove(filepath.Join(started.Workspace, "remove.txt")); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Materialized change")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	beforeHead := runGitTest(t, root, "rev-parse", "HEAD")
+	beforeBranch := runGitTest(t, root, "symbolic-ref", "--short", "HEAD")
+	beforeIndex := runGitTest(t, root, "ls-files", "--stage")
+	result, err := service.Land(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MaterializedRoot != service.Root {
+		t.Fatalf("materialized root = %q, want %q", result.MaterializedRoot, service.Root)
+	}
+	if got := runGitTest(t, root, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("HEAD moved from %s to %s", beforeHead, got)
+	}
+	if got := runGitTest(t, root, "symbolic-ref", "--short", "HEAD"); got != beforeBranch {
+		t.Fatalf("branch changed from %s to %s", beforeBranch, got)
+	}
+	if got := runGitTest(t, root, "ls-files", "--stage"); got != beforeIndex {
+		t.Fatalf("real index changed:\nwant %s\n got %s", beforeIndex, got)
+	}
+	if contents, err := os.ReadFile(filepath.Join(root, "base.txt")); err != nil || string(contents) != "landed\n" {
+		t.Fatalf("base.txt = %q, err=%v", string(contents), err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(root, "nested", "new.txt")); err != nil || string(contents) != "new\n" {
+		t.Fatalf("nested/new.txt = %q, err=%v", string(contents), err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "remove.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed file still exists: %v", err)
+	}
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RootStatus != "synchronized" || status.RootStateID != result.State.ID {
+		t.Fatalf("root status = %#v", status)
+	}
+}
+
+func TestLandMaterializesEmptyUnbornRootAcrossRepeatedLands(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	service, _, err := InitProject(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	for index, name := range []string{"one.txt", "two.txt"} {
+		started, err := service.CreatePrompt(ctx, "Add "+name, "", "agent")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(started.Workspace, name), name+"\n")
+		proposal, err := service.Propose(ctx, started.Prompt.ID, "Add "+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Land(ctx, proposal.Proposal.ID, nil); err != nil {
+			t.Fatalf("land %d: %v", index+1, err)
+		}
+	}
+	for _, name := range []string{"one.txt", "two.txt"} {
+		contents, err := os.ReadFile(filepath.Join(service.Root, name))
+		if err != nil || string(contents) != name+"\n" {
+			t.Fatalf("%s = %q, err=%v", name, string(contents), err)
+		}
+	}
+	if _, exists, err := service.Repo.Head(ctx); err != nil || exists {
+		t.Fatalf("unborn HEAD changed: exists=%v err=%v", exists, err)
+	}
+	if _, err := os.Stat(filepath.Join(service.Repo.GitDir(), "index")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("real index was created or changed: %v", err)
+	}
+}
+
+func TestAcceptLeavesVisibleRootStaleUntilSync(t *testing.T) {
+	ctx := context.Background()
+	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Add accepted file", "", "controller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "accepted.txt"), "accepted\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Controller accept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := service.Accept(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.MaterializedRoot != "" {
+		t.Fatal("controller accept unexpectedly materialized the visible root")
+	}
+	materialized, err := service.Store.MaterializedHead(ctx)
+	if err != nil || materialized.ID != initial.ID {
+		t.Fatalf("controller accept moved materialized head to %s: %v", materialized.ID, err)
+	}
+	if _, err := os.Stat(filepath.Join(service.Root, "accepted.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("controller accept changed visible root: %v", err)
+	}
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RootStatus != "stale" {
+		t.Fatalf("root status = %q, want stale", status.RootStatus)
+	}
+	synced, err := service.Sync(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !synced.Changed || synced.State.ID != accepted.State.ID {
+		t.Fatalf("sync result = %#v", synced)
+	}
+	materialized, err = service.Store.MaterializedHead(ctx)
+	if err != nil || materialized.ID != accepted.State.ID {
+		t.Fatalf("sync materialized head = %s, err=%v", materialized.ID, err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "accepted.txt")); err != nil || string(contents) != "accepted\n" {
+		t.Fatalf("accepted.txt = %q, err=%v", string(contents), err)
+	}
+	retried, err := service.Land(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.State.ID != accepted.State.ID {
+		t.Fatalf("retry created accepted state %s, want existing %s", retried.State.ID, accepted.State.ID)
+	}
+	history, err := service.History(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("retry created duplicate acceptance; history has %d states", len(history))
+	}
+}
+
+func TestLandBlocksDivergedVisibleRootBeforeAcceptance(t *testing.T) {
+	ctx := context.Background()
+	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Add landed file", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "landed.txt"), "landed\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Landed file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(service.Root, "local.txt"), "do not overwrite\n")
+	beforeRef, exists, err := service.Repo.ReadHiddenRef(ctx, acceptedRef)
+	if err != nil || !exists {
+		t.Fatalf("read accepted ref: exists=%v err=%v", exists, err)
+	}
+	_, err = service.Land(ctx, proposal.Proposal.ID, nil)
+	var conflict *RootConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("land error = %v, want RootConflictError", err)
+	}
+	head, err := service.Store.AcceptedHead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.ID != initial.ID {
+		t.Fatalf("blocked land moved accepted head to %s", head.ID)
+	}
+	afterRef, _, err := service.Repo.ReadHiddenRef(ctx, acceptedRef)
+	if err != nil || afterRef != beforeRef {
+		t.Fatalf("accepted ref changed from %s to %s: %v", beforeRef, afterRef, err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "local.txt")); err != nil || string(contents) != "do not overwrite\n" {
+		t.Fatalf("local file changed: %q, %v", string(contents), err)
+	}
+	if _, err := os.Stat(filepath.Join(service.Root, "landed.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocked land materialized proposal: %v", err)
+	}
+}
+
+func TestLandBlocksDivergentRealIndexWithoutChangingIt(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runGitTest(t, root, "init", "--quiet")
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	runGitTest(t, root, "add", "base.txt")
+	runGitTest(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "initial")
+	service, initial, err := InitProject(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	started, err := service.CreatePrompt(ctx, "Add landed file", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "landed.txt"), "landed\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Landed file")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(root, "base.txt"), "staged\n")
+	runGitTest(t, root, "add", "base.txt")
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	beforeIndex := runGitTest(t, root, "ls-files", "--stage")
+	_, err = service.Land(ctx, proposal.Proposal.ID, nil)
+	var conflict *RootConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("land error = %v, want RootConflictError", err)
+	}
+	if got := runGitTest(t, root, "ls-files", "--stage"); got != beforeIndex {
+		t.Fatalf("real index changed:\nwant %s\n got %s", beforeIndex, got)
+	}
+	head, err := service.Store.AcceptedHead(ctx)
+	if err != nil || head.ID != initial.ID {
+		t.Fatalf("accepted head = %s, err=%v", head.ID, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "landed.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocked land materialized proposal: %v", err)
+	}
+}
+
+func TestLandPreservesIgnoredFilesAndRejectsIgnoredDestination(t *testing.T) {
+	t.Run("unrelated ignored content", func(t *testing.T) {
+		ctx := context.Background()
+		service, _ := newTestProject(t, map[string]string{".gitignore": "cache/\n", "base.txt": "base\n"})
+		writeTestFile(t, filepath.Join(service.Root, "cache", "private.txt"), "private\n")
+		started, err := service.CreatePrompt(ctx, "Add visible file", "", "agent")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(started.Workspace, "landed.txt"), "landed\n")
+		proposal, err := service.Propose(ctx, started.Prompt.ID, "Visible file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Land(ctx, proposal.Proposal.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if contents, err := os.ReadFile(filepath.Join(service.Root, "cache", "private.txt")); err != nil || string(contents) != "private\n" {
+			t.Fatalf("ignored file changed: %q, %v", string(contents), err)
+		}
+	})
+
+	t.Run("ignored destination collision", func(t *testing.T) {
+		ctx := context.Background()
+		service, initial := newTestProject(t, map[string]string{".gitignore": "generated\n"})
+		writeTestFile(t, filepath.Join(service.Root, "generated"), "private\n")
+		started, err := service.CreatePrompt(ctx, "Generate tracked output", "", "agent")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(started.Workspace, ".gitignore"), "")
+		writeTestFile(t, filepath.Join(started.Workspace, "generated"), "accepted\n")
+		proposal, err := service.Propose(ctx, started.Prompt.ID, "Tracked output")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = service.Land(ctx, proposal.Proposal.ID, nil)
+		var conflict *RootConflictError
+		if !errors.As(err, &conflict) {
+			t.Fatalf("land error = %v, want RootConflictError", err)
+		}
+		head, err := service.Store.AcceptedHead(ctx)
+		if err != nil || head.ID != initial.ID {
+			t.Fatalf("accepted head = %s, err=%v", head.ID, err)
+		}
+		if contents, err := os.ReadFile(filepath.Join(service.Root, "generated")); err != nil || string(contents) != "private\n" {
+			t.Fatalf("ignored collision was overwritten: %q, %v", string(contents), err)
+		}
+	})
+}
+
+func TestLandMaterializesFileDirectoryTypeChanges(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{
+		"directory/old.txt": "old\n",
+		"file":              "old file\n",
+	})
+	started, err := service.CreatePrompt(ctx, "Change source entry types", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(started.Workspace, "directory")); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "directory"), "now a file\n")
+	if err := os.Remove(filepath.Join(started.Workspace, "file")); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "file", "new.txt"), "now a directory\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Change entry types")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, proposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "directory")); err != nil || string(contents) != "now a file\n" {
+		t.Fatalf("directory replacement = %q, %v", string(contents), err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "file", "new.txt")); err != nil || string(contents) != "now a directory\n" {
+		t.Fatalf("file replacement = %q, %v", string(contents), err)
+	}
+}
+
+func TestFailedLandValidationDoesNotMaterializeVisibleRoot(t *testing.T) {
+	ctx := context.Background()
+	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Add invalid file", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "invalid.txt"), "invalid\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Land(ctx, proposal.Proposal.ID, []string{"sh", "-c", "exit 7"})
+	var failed *CheckFailedError
+	if !errors.As(err, &failed) {
+		t.Fatalf("land error = %v, want CheckFailedError", err)
+	}
+	if _, err := os.Stat(filepath.Join(service.Root, "invalid.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed land materialized file: %v", err)
+	}
+	head, err := service.Store.AcceptedHead(ctx)
+	if err != nil || head.ID != initial.ID {
+		t.Fatalf("accepted head = %s, err=%v", head.ID, err)
+	}
+}
+
 func newTestProject(t *testing.T, files map[string]string) (*Service, State) {
 	t.Helper()
 	root := t.TempDir()
@@ -615,6 +981,17 @@ func runGitTest(t *testing.T, root string, args ...string) string {
 
 func runCLIJSONTest(t *testing.T, args []string) map[string]any {
 	t.Helper()
+	configuredRoot, hadConfiguredRoot := os.LookupEnv("HOP_ROOT")
+	if err := os.Unsetenv("HOP_ROOT"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if hadConfiguredRoot {
+			_ = os.Setenv("HOP_ROOT", configuredRoot)
+		} else {
+			_ = os.Unsetenv("HOP_ROOT")
+		}
+	}()
 	var stdout, stderr bytes.Buffer
 	if code := RunCLI(args, &stdout, &stderr); code != 0 {
 		t.Fatalf("hop %s exited %d\nstdout: %s\nstderr: %s", strings.Join(args, " "), code, stdout.String(), stderr.String())
@@ -631,6 +1008,17 @@ func runCLIJSONTest(t *testing.T, args []string) map[string]any {
 
 func runCLIJSONInputTest(t *testing.T, args []string, input string) map[string]any {
 	t.Helper()
+	configuredRoot, hadConfiguredRoot := os.LookupEnv("HOP_ROOT")
+	if err := os.Unsetenv("HOP_ROOT"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if hadConfiguredRoot {
+			_ = os.Setenv("HOP_ROOT", configuredRoot)
+		} else {
+			_ = os.Unsetenv("HOP_ROOT")
+		}
+	}()
 	var stdout, stderr bytes.Buffer
 	if code := RunCLIWithInput(args, strings.NewReader(input), &stdout, &stderr); code != 0 {
 		t.Fatalf("hop %s exited %d\nstdout: %s\nstderr: %s", strings.Join(args, " "), code, stdout.String(), stderr.String())

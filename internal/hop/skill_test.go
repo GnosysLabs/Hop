@@ -33,6 +33,13 @@ func TestInstallSkillBundle(t *testing.T) {
 	if !strings.Contains(string(metadata), "allow_implicit_invocation: true") {
 		t.Fatal("installed skill does not permit Desktop implicit invocation")
 	}
+	skill, err := os.ReadFile(filepath.Join(result.Path, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "Auto-accept by default") {
+		t.Fatal("installed skill does not enable automatic acceptance")
+	}
 	if _, err := InstallSkill(base, false); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("second install error = %v, want existing-skill error", err)
 	}

@@ -21,6 +21,8 @@ Usage:
   hop check STATE -- COMMAND [ARG...]
   hop propose [--summary TEXT] STATE
   hop accept STATE [-- COMMAND [ARG...]]
+  hop land STATE [-- COMMAND [ARG...]]
+  hop sync
   hop status
   hop graph
   hop state STATE
@@ -36,7 +38,7 @@ Usage:
 Add --json anywhere for machine-readable output.
 `
 
-const Version = "0.1.0-alpha.2"
+const Version = "0.1.0-alpha.3"
 
 func RunCLI(args []string, stdout, stderr io.Writer) int {
 	return RunCLIWithInput(args, os.Stdin, stdout, stderr)
@@ -234,7 +236,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			fmt.Fprintf(stdout, "Created proposal %s · tree %s · %d matching checks\n", result.Proposal.ID, shortHash(result.Proposal.SourceTree), len(result.Checks))
 		}
 
-	case "accept", "land":
+	case "accept":
 		stateID, argv, ok := splitOptionalCommand(commandArgs)
 		if !ok {
 			fmt.Fprintln(stderr, "usage: hop accept STATE [-- COMMAND [ARG...]]")
@@ -246,12 +248,52 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			return printCLIError(err, jsonOutput, stdout, stderr)
 		}
 		if !jsonOutput {
-			fmt.Fprintf(stdout, "Accepted as %s · tree %s\n", result.State.ID, shortHash(result.State.SourceTree))
+			fmt.Fprintf(stdout, "Accepted internally as %s · tree %s · visible root unchanged\n", result.State.ID, shortHash(result.State.SourceTree))
 			if result.Check == nil {
-				fmt.Fprintln(stdout, "No final-state validation command was supplied; acceptance was manual.")
+				fmt.Fprintln(stdout, "No final-state validation command was supplied.")
 			}
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(stderr, "Warning: %s\n", warning)
+			}
+		}
+
+	case "land":
+		stateID, argv, ok := splitOptionalCommand(commandArgs)
+		if !ok {
+			fmt.Fprintln(stderr, "usage: hop land STATE [-- COMMAND [ARG...]]")
+			return 2
+		}
+		result, err := service.Land(ctx, stateID, argv)
+		value = result
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if !jsonOutput {
+			fmt.Fprintf(stdout, "Landed as %s · tree %s\n", result.State.ID, shortHash(result.State.SourceTree))
+			fmt.Fprintf(stdout, "Synchronized visible root: %s\n", result.MaterializedRoot)
+			if result.Check == nil {
+				fmt.Fprintln(stdout, "No final-state validation command was supplied.")
+			}
+			for _, warning := range result.Warnings {
+				fmt.Fprintf(stderr, "Warning: %s\n", warning)
+			}
+		}
+
+	case "sync":
+		if len(commandArgs) != 0 {
+			fmt.Fprintln(stderr, "usage: hop sync")
+			return 2
+		}
+		result, err := service.Sync(ctx)
+		value = result
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if !jsonOutput {
+			if result.Changed {
+				fmt.Fprintf(stdout, "Synchronized %s to accepted state %s\n", result.Root, result.State.ID)
+			} else {
+				fmt.Fprintf(stdout, "Visible root already matches accepted state %s\n", result.State.ID)
 			}
 		}
 
@@ -263,6 +305,14 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		value = status
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Accepted: %s · tree %s\n", status.AcceptedHead.ID, shortHash(status.AcceptedHead.SourceTree))
+			switch status.RootStatus {
+			case "synchronized":
+				fmt.Fprintln(stdout, "Root: synchronized")
+			case "stale":
+				fmt.Fprintf(stdout, "Root: stale at %s\n", status.RootStateID)
+			default:
+				fmt.Fprintln(stdout, "Root: diverged; Hop will not overwrite it")
+			}
 			if len(status.Attempts) == 0 {
 				fmt.Fprintln(stdout, "No attempts yet.")
 			}
@@ -461,11 +511,14 @@ func runSkillCLI(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
 func printCLIError(err error, jsonOutput bool, stdout, stderr io.Writer) int {
 	code := 1
 	var conflict *ConflictError
+	var rootConflict *RootConflictError
 	var stale *StaleHeadError
 	var failed *CheckFailedError
 	switch {
 	case errors.As(err, &conflict):
 		code = 20
+	case errors.As(err, &rootConflict):
+		code = 23
 	case errors.As(err, &stale):
 		code = 21
 	case errors.As(err, &failed):
@@ -478,6 +531,12 @@ func printCLIError(err error, jsonOutput bool, stdout, stderr io.Writer) int {
 		if conflict != nil && len(conflict.Paths) > 0 {
 			fmt.Fprintln(stderr, "Overlapping paths:")
 			for _, path := range conflict.Paths {
+				fmt.Fprintf(stderr, "  %s\n", path)
+			}
+		}
+		if rootConflict != nil && len(rootConflict.Paths) > 0 {
+			fmt.Fprintln(stderr, "Visible-root conflicts:")
+			for _, path := range rootConflict.Paths {
 				fmt.Fprintf(stderr, "  %s\n", path)
 			}
 		}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -594,6 +595,267 @@ func (r *Repository) ChangedPaths(ctx context.Context, from, to string) ([]strin
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+// WorktreeTree snapshots the visible worktree relative to an expected Hop
+// tree. The caller's real Git index is never read or changed. Seeding from the
+// expected tree makes Hop-projected files remain visible to the snapshot even
+// when they are untracked by the user's branch or matched by an ignore rule.
+func (r *Repository) WorktreeTree(ctx context.Context, expected string) (string, error) {
+	expectedTree, err := r.resolveTree(ctx, expected)
+	if err != nil {
+		return "", err
+	}
+	indexPath, cleanup, err := r.temporaryIndex(false)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	env := []string{"GIT_INDEX_FILE=" + indexPath, "GIT_OPTIONAL_LOCKS=0"}
+	if _, err := r.run(ctx, env, nil, "read-tree", expectedTree); err != nil {
+		return "", fmt.Errorf("seed visible-root snapshot: %w", err)
+	}
+	if _, err := r.run(ctx, env, nil, "add", "-A", "--", "."); err != nil {
+		return "", fmt.Errorf("snapshot visible project root: %w", err)
+	}
+	output, err := r.run(ctx, env, nil, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("write visible-root tree: %w", err)
+	}
+	return trimLine(output), nil
+}
+
+// CheckIndexSafe verifies that the user's real index contains no staged state
+// outside either their current HEAD or the Hop tree already visible in the
+// project root. Hop never writes this index, but refusing divergent staging
+// prevents a landing from obscuring the user's in-progress Git operation.
+func (r *Repository) CheckIndexSafe(ctx context.Context, visibleTree string) error {
+	visibleTree, err := r.resolveTree(ctx, visibleTree)
+	if err != nil {
+		return err
+	}
+	head, exists, err := r.Head(ctx)
+	if err != nil {
+		return err
+	}
+	headTree := ""
+	if exists {
+		headTree, err = r.resolveTree(ctx, head)
+	} else {
+		headTree, err = r.EmptyTree(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	indexTree, err := r.userIndexTree(ctx)
+	if err != nil {
+		return &RootConflictError{Reason: "visible project root has unmerged or intent-to-add entries in the real Git index"}
+	}
+	if indexTree == headTree || indexTree == visibleTree {
+		return nil
+	}
+	paths, err := r.ChangedPaths(ctx, headTree, indexTree)
+	if err != nil {
+		return err
+	}
+	return &RootConflictError{
+		Paths:  paths,
+		Reason: "visible project root has staged Git changes that do not match HEAD or its materialized Hop state",
+	}
+}
+
+func (r *Repository) userIndexTree(ctx context.Context) (string, error) {
+	indexPath := filepath.Join(r.gitDir, "index")
+	if _, err := os.Stat(indexPath); errors.Is(err, os.ErrNotExist) {
+		return r.EmptyTree(ctx)
+	} else if err != nil {
+		return "", fmt.Errorf("inspect real Git index: %w", err)
+	}
+	output, err := r.run(ctx, []string{
+		"GIT_INDEX_FILE=" + indexPath,
+		"GIT_OPTIONAL_LOCKS=0",
+	}, nil, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("read real Git index tree: %w", err)
+	}
+	return trimLine(output), nil
+}
+
+// MaterializationConflicts finds filesystem entries that a tree projection
+// would overwrite even though they are absent from the source tree. This
+// catches ignored files, which intentionally do not appear in WorktreeTree.
+func (r *Repository) MaterializationConflicts(ctx context.Context, from, to string) ([]string, error) {
+	fromPaths, err := r.treeLeafPaths(ctx, from)
+	if err != nil {
+		return nil, err
+	}
+	toPaths, err := r.treeLeafPaths(ctx, to)
+	if err != nil {
+		return nil, err
+	}
+	conflicts := map[string]struct{}{}
+	for path := range toPaths {
+		if _, existed := fromPaths[path]; existed {
+			continue
+		}
+		parts := strings.Split(path, "/")
+		for index := range parts {
+			prefix := strings.Join(parts[:index+1], "/")
+			info, statErr := os.Lstat(filepath.Join(r.root, filepath.FromSlash(prefix)))
+			if statErr != nil {
+				if errors.Is(statErr, os.ErrNotExist) || errors.Is(statErr, syscall.ENOTDIR) {
+					break
+				}
+				return nil, fmt.Errorf("inspect visible path %s: %w", prefix, statErr)
+			}
+			if index < len(parts)-1 {
+				if info.IsDir() {
+					continue
+				}
+				if _, expected := fromPaths[prefix]; expected {
+					break
+				}
+				conflicts[prefix] = struct{}{}
+				break
+			}
+			if info.IsDir() {
+				unexpected, walkErr := r.unexpectedDirectoryLeaves(path, fromPaths)
+				if walkErr != nil {
+					return nil, walkErr
+				}
+				for _, unexpectedPath := range unexpected {
+					conflicts[unexpectedPath] = struct{}{}
+				}
+				continue
+			}
+			conflicts[path] = struct{}{}
+		}
+	}
+	paths := make([]string, 0, len(conflicts))
+	for path := range conflicts {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func (r *Repository) unexpectedDirectoryLeaves(path string, expected map[string]struct{}) ([]string, error) {
+	root := filepath.Join(r.root, filepath.FromSlash(path))
+	var conflicts []string
+	err := filepath.WalkDir(root, func(candidate string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if candidate == root || entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(r.root, candidate)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if _, ok := expected[relative]; !ok {
+			conflicts = append(conflicts, relative)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inspect visible directory %s: %w", path, err)
+	}
+	sort.Strings(conflicts)
+	return conflicts, nil
+}
+
+// MaterializeTree updates only the visible worktree from one accepted tree to
+// another. HEAD, the current branch, and the user's real index remain exactly
+// where they were. The operation fails closed when the worktree no longer
+// matches from or an ignored destination would be overwritten.
+func (r *Repository) MaterializeTree(ctx context.Context, from, to string) error {
+	fromTree, err := r.resolveTree(ctx, from)
+	if err != nil {
+		return err
+	}
+	toTree, err := r.resolveTree(ctx, to)
+	if err != nil {
+		return err
+	}
+	if err := r.CheckIndexSafe(ctx, fromTree); err != nil {
+		return err
+	}
+	actualTree, err := r.WorktreeTree(ctx, fromTree)
+	if err != nil {
+		return err
+	}
+	if actualTree != fromTree {
+		paths, pathErr := r.ChangedPaths(ctx, fromTree, actualTree)
+		if pathErr != nil {
+			return pathErr
+		}
+		return &RootConflictError{Paths: paths}
+	}
+	conflicts, err := r.MaterializationConflicts(ctx, fromTree, toTree)
+	if err != nil {
+		return err
+	}
+	if len(conflicts) > 0 {
+		return &RootConflictError{
+			Paths:  conflicts,
+			Reason: "visible project root contains ignored or untracked paths that landing would overwrite",
+		}
+	}
+	if fromTree == toTree {
+		return nil
+	}
+
+	indexPath, cleanup, err := r.temporaryIndex(false)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	env := []string{"GIT_INDEX_FILE=" + indexPath, "GIT_OPTIONAL_LOCKS=0"}
+	if _, err := r.run(ctx, env, nil, "read-tree", fromTree); err != nil {
+		return fmt.Errorf("seed visible-root materialization: %w", err)
+	}
+	if _, err := r.run(ctx, env, nil, "update-index", "--refresh"); err != nil {
+		return &RootConflictError{Reason: "visible project root changed while Hop was preparing to synchronize it"}
+	}
+	if _, err := r.run(ctx, env, nil, "read-tree", "-m", "-u", fromTree, toTree); err != nil {
+		return fmt.Errorf("materialize accepted tree into visible project root: %w", err)
+	}
+	materializedTree, err := r.WorktreeTree(ctx, toTree)
+	if err != nil {
+		return err
+	}
+	if materializedTree != toTree {
+		paths, pathErr := r.ChangedPaths(ctx, toTree, materializedTree)
+		if pathErr != nil {
+			return pathErr
+		}
+		return &RootConflictError{
+			Paths:  paths,
+			Reason: "visible project root changed while Hop was synchronizing it",
+		}
+	}
+	return nil
+}
+
+func (r *Repository) treeLeafPaths(ctx context.Context, object string) (map[string]struct{}, error) {
+	tree, err := r.resolveTree(ctx, object)
+	if err != nil {
+		return nil, err
+	}
+	output, err := r.run(ctx, nil, nil, "ls-tree", "-r", "-z", "--name-only", tree)
+	if err != nil {
+		return nil, fmt.Errorf("list tree paths: %w", err)
+	}
+	paths := make(map[string]struct{})
+	for _, path := range splitNull([]byte(output)) {
+		if path != "" {
+			paths[path] = struct{}{}
+		}
+	}
+	return paths, nil
 }
 
 // TrackedPaths lists index entries at or below path. Hop uses this before

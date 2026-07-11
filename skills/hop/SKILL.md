@@ -62,7 +62,7 @@ hop state <HOP_STATE_ID> --json
 hop status --json
 ```
 
-## Execute and submit
+## Execute and auto-accept
 
 1. Inspect and modify only the Hop workspace.
 2. Keep the change scoped to the captured prompt.
@@ -79,7 +79,17 @@ hop status --json
    hop propose --summary "<behavioral summary>" <HOP_STATE_ID>
    ```
 
-6. Report the prompt state, proposal state, checks, and remaining risks.
+6. Unless the user explicitly requested review-only mode, immediately accept
+   the proposal and validate the exact final tree:
+
+   ```bash
+   hop land <proposal-state> -- <final-test-command> [args...]
+   ```
+
+7. Report the accepted result, validation, and remaining risks. Keep internal
+   state and evidence IDs out of the normal response unless they help explain a
+   failure or the user asks for them. Confirm that `hop land` reported the
+   selected visible project root as synchronized.
 
 For a read-only or informational turn, the prompt state is sufficient; do not
 invent a proposal when the workspace tree is unchanged.
@@ -88,16 +98,31 @@ Do not edit a frozen proposal. A user follow-up triggers this skill again;
 run `hop begin` again before acting. Session binding selects the existing
 attempt automatically, so the user never needs to carry state IDs.
 
-## Land only with explicit authority
+## Auto-accept by default
 
-Capture the landing request with `hop begin` first. Then, only when the user
-explicitly authorizes landing, run:
+The captured task prompt authorizes accepting the local project changes needed
+to complete that task. Do not ask for separate landing permission and do not
+capture a second prompt merely to land. After checks pass and the proposal is
+frozen, run `hop land` as part of the same turn.
 
-```bash
-hop land <proposal-state> -- <final-test-command> [args...]
-```
+Use the strongest relevant final validation command. If the task truly has no
+runnable validation, `hop land <proposal-state>` is allowed and the final
+response must say that acceptance was not validated by a command.
+
+Stop before acceptance only when:
+
+- the user explicitly says `review first`, `proposal only`, `do not land`, or
+  otherwise asks to approve the result before it is accepted;
+- validation fails;
+- Hop reports overlap, a changed accepted head, or visible-root divergence; or
+- acceptance would require a destructive, external, or out-of-scope action not
+  authorized by the captured task.
 
 On overlap or validation failure, preserve the proposal and report the block.
+If visible-root synchronization is blocked, do not bypass it with `hop accept`,
+force checkout, reset, or file copying. Preserve the proposal and identify the
+user-owned paths that must be resolved. `hop accept` is reserved for an
+explicitly controller-only workflow; Desktop work always uses `hop land`.
 Use `hop undo` only after a separately captured, explicit user request.
 
 Read [references/protocol.md](references/protocol.md) for state semantics, exit

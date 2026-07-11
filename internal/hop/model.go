@@ -76,14 +76,24 @@ type Status struct {
 	Root         string    `json:"root"`
 	AcceptedHead State     `json:"accepted_head"`
 	Attempts     []Attempt `json:"attempts"`
+	RootStatus   string    `json:"root_status"`
+	RootStateID  string    `json:"root_state_id,omitempty"`
 }
 
 type AcceptResult struct {
-	State         State    `json:"state"`
-	ProposalPaths []string `json:"proposal_paths"`
-	CurrentPaths  []string `json:"current_paths"`
-	Check         *Check   `json:"check,omitempty"`
-	Warnings      []string `json:"warnings,omitempty"`
+	State            State    `json:"state"`
+	ProposalPaths    []string `json:"proposal_paths"`
+	CurrentPaths     []string `json:"current_paths"`
+	Check            *Check   `json:"check,omitempty"`
+	MaterializedRoot string   `json:"materialized_root,omitempty"`
+	Warnings         []string `json:"warnings,omitempty"`
+}
+
+type SyncResult struct {
+	State     State  `json:"state"`
+	Root      string `json:"root"`
+	FromState string `json:"from_state"`
+	Changed   bool   `json:"changed"`
 }
 
 type PromptRedaction struct {
@@ -146,14 +156,15 @@ func (e *CheckFailedError) Error() string {
 }
 
 // CommittedStateError means the authoritative SQLite transition succeeded but
-// a derived Git ref needs repair. Callers must not retry the state transition.
+// a derived ref or visible-root synchronization needs repair. Callers must not
+// retry the state transition.
 type CommittedStateError struct {
 	State State
 	Err   error
 }
 
 func (e *CommittedStateError) Error() string {
-	return fmt.Sprintf("state %s is committed, but derived Git refs need repair: %v", e.State.ID, e.Err)
+	return fmt.Sprintf("state %s is committed, but post-acceptance synchronization needs repair: %v", e.State.ID, e.Err)
 }
 
 func (e *CommittedStateError) Unwrap() error { return e.Err }
@@ -164,4 +175,16 @@ type ConflictError struct {
 
 func (e *ConflictError) Error() string {
 	return "proposal overlaps changes accepted since its canonical anchor"
+}
+
+type RootConflictError struct {
+	Paths  []string
+	Reason string
+}
+
+func (e *RootConflictError) Error() string {
+	if e.Reason != "" {
+		return e.Reason
+	}
+	return "visible project root has out-of-band changes; refusing to overwrite it"
 }

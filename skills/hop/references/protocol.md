@@ -48,7 +48,8 @@ hop init
 hop start --agent <name> "<exact initial prompt>"
 hop env <prompt-state>
 hop prompt --from <state> "<exact follow-up prompt>"
-hop land <proposal> -- <final validation command>
+hop accept <proposal> -- <final validation command>
+hop sync
 hop undo
 ```
 
@@ -66,13 +67,25 @@ hop state "$HOP_STATE_ID" --json
 hop status --json
 hop check "$HOP_STATE_ID" -- <command>
 hop propose --summary "<summary>" "$HOP_STATE_ID"
+hop land <proposal-state> -- <final validation command>
 ```
 
 `hop check` snapshots the attempt and runs the command in a detached worktree materialized from that exact checkpoint. Edits made concurrently in the live workspace do not change the tested tree.
 
 `hop propose` freezes the current nonignored workspace tree. Later workspace edits cannot change the proposal.
 
-`hop land` compares paths changed by the proposal with paths accepted since its base. Any shared changed path blocks landing. Disjoint proposals are composed with Git three-tree plumbing and may then be validated on the final tree.
+The initial task prompt authorizes the agent to run `hop land` after successful
+validation; a second user approval is not required. Manual review is an opt-in
+mode: stop at the proposal only when the user explicitly asks to review or
+approve before acceptance. Validation failure, overlap, a stale accepted head,
+or newly required destructive/external scope also stops automatic acceptance.
+
+`hop land` is the Desktop operation. It compares paths changed by the proposal with paths accepted since its base, validates and advances accepted state, then safely materializes that tree into the selected visible project root. The root must still match an accepted Hop ancestor, and ignored or untracked destination collisions block before acceptance. Materialization uses a disposable index and never moves HEAD, the active branch, or the user's real index.
+
+`hop accept` is the controller/kernel operation. It advances SQLite and
+`refs/hop/accepted` but intentionally leaves the visible root untouched.
+`hop sync` safely catches a stale accepted-ancestor root up to the current
+accepted state, including projects created with older Hop builds.
 
 `hop begin` is the Codex Desktop entry point. It initializes Hop when necessary,
 captures the current message before the agent performs project work, and uses
@@ -95,6 +108,7 @@ command, summary, output, or source file.
 | `20` | Overlap or conservative conflict block |
 | `21` | Accepted or attempt head changed during compare-and-swap |
 | `22` | Validation command failed |
+| `23` | Visible project root diverged or contains an overwrite collision |
 
 A failed `hop check` or final landing check persists its evidence. A blocked or failed landing does not advance accepted state.
 
@@ -130,8 +144,11 @@ provide the same boundary inside compatible agent clients.
 
 - **Missing Hop environment:** run `hop begin` before project work and use the returned state and workspace.
 - **Check failure:** fix the live workspace, checkpoint/check again, then create a new proposal.
+- **Review-only request:** preserve and report the proposal without landing it.
 - **Frozen proposal needs changes:** record a follow-up prompt; never mutate the stored proposal.
 - **Overlap on landing:** retain both lineages and reconcile through a new prompt against current accepted state.
+- **Visible-root conflict:** preserve the proposal and the user's files. Do not substitute controller-only `hop accept`; resolve or capture the visible changes, then land again.
+- **Controller-accepted root is stale:** run `hop sync`; it succeeds only from an accepted ancestor and never overwrites divergence.
 - **Ref inconsistency:** run `hop doctor`; use `hop doctor --repair` only outside final validation.
 - **Secrets:** Hop redacts high-confidence provider keys plus contextual tokens,
   passwords, private keys, authorization headers, and credential-bearing URLs

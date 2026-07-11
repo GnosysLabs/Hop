@@ -170,10 +170,11 @@ Prompt creation and canonical acceptance are separate transitions:
 4. Hop compare-and-swaps the run head to `P`; only then may it deliver the prompt to the agent.
 5. The agent receives `HOP_STATE_ID=P`, works in an isolated workspace, and declares expiring claims.
 6. Work becomes descendant checkpoints and eventually frozen proposal `R`; failure or cancellation also produces an addressable terminal state.
-7. If `R` is nominated for acceptance, Hop reconciles it against the current accepted head in a temporary integration workspace.
+7. By default the agent immediately nominates `R` for automatic acceptance; an explicit review-first request pauses here. Hop reconciles it against the current accepted head in a temporary integration workspace.
 8. Hop evaluates textual overlap, symbol and contract risk, policies, and required tests on the exact final roots.
 9. Hop creates accepted state `A`, linked to both the previous accepted state and `R`, then atomically advances `accepted_head` with compare-and-swap.
-10. Every prompt, checkpoint, proposal, and acceptance remains addressable regardless of later outcomes.
+10. In Desktop mode, Hop materializes `A` into the selected visible root only when that root still matches accepted history; it preserves HEAD and the real Git index and blocks rather than overwriting divergence.
+11. Every prompt, checkpoint, proposal, and acceptance remains addressable regardless of later outcomes.
 
 The important invariants are:
 
@@ -210,6 +211,11 @@ Automatic acceptance should require all of the following:
 - Required deterministic checks pass on the final tree.
 - The proposal remains inside configured risk thresholds.
 - Any required human or policy approval is present.
+
+For ordinary local agent work, the task prompt supplies the acceptance authority
+and Hop should auto-accept after deterministic checks pass. A separate landing
+prompt is unnecessary ceremony. Human approval remains available when the user
+explicitly requests review first or project policy protects the affected scope.
 
 Model-generated compatibility analysis can explain risk and select extra checks, but it should not be the sole authority for acceptance.
 
@@ -269,10 +275,13 @@ Dynamic active work belongs in `hop board` and `hop context`, not in a file copi
 
 ## Human and agent experience
 
-The human-facing loop should be five verbs:
+The default human-facing loop should be four verbs, with Review as an opt-in
+pause before acceptance:
 
 ```text
-Ask → Work → Review → Land → Undo
+Ask → Work → Accept → Undo
+             ↑
+        optional Review
 ```
 
 A plausible CLI:
@@ -326,7 +335,9 @@ The smallest complete product is a **parallel-agent landing queue** backed by Gi
 8. Nominate a sealed state with its structured summary, commands, and test evidence.
 9. Materialize it on the current accepted head in an integration workspace.
 10. Run configured checks on that exact final state.
-11. Advance the accepted head atomically and export a normal Git-compatible commit.
+11. Auto-accept successful ordinary local work without another user prompt,
+    then advance the accepted head atomically, export a normal Git-compatible
+    commit, and safely synchronize the visible Desktop root.
 12. Undo an accepted state through a compensating prompt/integration state.
 13. Generate a small `PROJECT.md` from accepted facts.
 14. Install a vendor-neutral agent skill and expose stable JSON CLI output.

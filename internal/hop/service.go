@@ -505,7 +505,19 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	return ProposalResult{Proposal: proposal, Checks: checks}, nil
 }
 
+// Accept advances Hop's internal accepted lineage without changing the visible
+// project root. Controllers use this lower-level operation deliberately.
 func (s *Service) Accept(ctx context.Context, proposalID string, checkCommand []string) (AcceptResult, error) {
+	return s.accept(ctx, proposalID, checkCommand, false)
+}
+
+// Land accepts a proposal and projects the resulting accepted tree into the
+// visible project root while preserving the user's HEAD, branch, and index.
+func (s *Service) Land(ctx context.Context, proposalID string, checkCommand []string) (AcceptResult, error) {
+	return s.accept(ctx, proposalID, checkCommand, true)
+}
+
+func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []string, materialize bool) (AcceptResult, error) {
 	release, err := acquireProjectLock(ctx, s.Root, "accept")
 	if err != nil {
 		return AcceptResult{}, err
@@ -518,6 +530,18 @@ func (s *Service) Accept(ctx context.Context, proposalID string, checkCommand []
 	}
 	if proposal.Kind != StateProposal {
 		return AcceptResult{}, fmt.Errorf("state %s is %s, not a proposal", proposal.ID, proposal.Kind)
+	}
+	if existing, exists, err := s.Store.AcceptedForProposal(ctx, proposal.ID); err != nil {
+		return AcceptResult{}, err
+	} else if exists {
+		result := AcceptResult{State: existing}
+		if materialize {
+			if _, err := s.syncLocked(ctx); err != nil {
+				return result, &CommittedStateError{State: existing, Err: fmt.Errorf("repair visible root after prior acceptance: %w", err)}
+			}
+			result.MaterializedRoot = s.Root
+		}
+		return result, nil
 	}
 	attempt, err := s.Store.GetAttempt(ctx, proposal.AttemptID)
 	if err != nil {
@@ -543,12 +567,16 @@ func (s *Service) Accept(ctx context.Context, proposalID string, checkCommand []
 	if len(overlap) > 0 {
 		return AcceptResult{}, &ConflictError{Paths: overlap}
 	}
-	finalTree, mergeConflicts, err := s.Repo.ComposeTrees(ctx, base.GitCommit, current.GitCommit, proposal.GitCommit)
-	if err != nil {
-		return AcceptResult{}, err
-	}
-	if len(mergeConflicts) > 0 {
-		return AcceptResult{}, &ConflictError{Paths: mergeConflicts}
+	finalTree := proposal.SourceTree
+	if current.SourceTree != base.SourceTree {
+		var mergeConflicts []string
+		finalTree, mergeConflicts, err = s.Repo.ComposeTrees(ctx, base.GitCommit, current.GitCommit, proposal.GitCommit)
+		if err != nil {
+			return AcceptResult{}, err
+		}
+		if len(mergeConflicts) > 0 {
+			return AcceptResult{}, &ConflictError{Paths: mergeConflicts}
+		}
 	}
 
 	acceptedID := newID("a")
@@ -564,6 +592,11 @@ func (s *Service) Accept(ctx context.Context, proposalID string, checkCommand []
 
 	var recordedCheck *Check
 	validationRef := ""
+	defer func() {
+		if validationRef != "" {
+			_ = s.Repo.DeleteRef(ctx, "refs/hop/"+validationRef, commit)
+		}
+	}()
 	if len(checkCommand) > 0 {
 		checkID := newID("evidence")
 		validationRef = "validation/" + checkID
@@ -619,6 +652,14 @@ func (s *Service) Accept(ctx context.Context, proposalID string, checkCommand []
 		}
 	}
 
+	var rootBase State
+	if materialize {
+		rootBase, err = s.prepareRootMaterialization(ctx, finalTree)
+		if err != nil {
+			return AcceptResult{}, err
+		}
+	}
+
 	parents := canonicalizeParents([]Parent{
 		{StateID: current.ID, Role: "canonical_parent", Order: 0},
 		{StateID: proposal.ID, Role: "proposal_parent", Order: 1},
@@ -649,18 +690,142 @@ func (s *Service) Accept(ctx context.Context, proposalID string, checkCommand []
 	}
 	if validationRef != "" {
 		_ = s.Repo.DeleteRef(ctx, "refs/hop/"+validationRef, commit)
+		validationRef = ""
 	}
 	var warnings []string
 	if err := s.Repo.UpdateHiddenRef(ctx, acceptedRef, commit); err != nil {
 		warnings = append(warnings, "accepted state is durable in SQLite but refs/hop/accepted needs repair: "+err.Error())
 	}
-	return AcceptResult{
+	result := AcceptResult{
 		State:         accepted,
 		ProposalPaths: proposalPaths,
 		CurrentPaths:  currentPaths,
 		Check:         recordedCheck,
 		Warnings:      warnings,
+	}
+	if materialize {
+		if err := s.Repo.MaterializeTree(ctx, rootBase.SourceTree, accepted.SourceTree); err != nil {
+			return result, &CommittedStateError{State: accepted, Err: fmt.Errorf("visible root %s was not synchronized: %w", s.Root, err)}
+		}
+		if err := s.Store.CASMaterializedHead(ctx, rootBase.ID, accepted.ID); err != nil {
+			return result, &CommittedStateError{State: accepted, Err: fmt.Errorf("record visible root synchronization: %w", err)}
+		}
+		result.MaterializedRoot = s.Root
+	}
+	return result, nil
+}
+
+// Sync projects the current accepted tree into a visible root that still
+// matches its durable materialized head. It is useful after controller-only accepts or
+// when upgrading a project created before automatic materialization existed.
+func (s *Service) Sync(ctx context.Context) (SyncResult, error) {
+	release, err := acquireProjectLock(ctx, s.Root, "accept")
+	if err != nil {
+		return SyncResult{}, err
+	}
+	defer release()
+	return s.syncLocked(ctx)
+}
+
+func (s *Service) syncLocked(ctx context.Context) (SyncResult, error) {
+	current, err := s.Store.AcceptedHead(ctx)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	rootBase, err := s.prepareRootMaterialization(ctx, current.SourceTree)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	changed := rootBase.SourceTree != current.SourceTree
+	if err := s.Repo.MaterializeTree(ctx, rootBase.SourceTree, current.SourceTree); err != nil {
+		return SyncResult{}, err
+	}
+	if err := s.Store.CASMaterializedHead(ctx, rootBase.ID, current.ID); err != nil {
+		return SyncResult{}, fmt.Errorf("record visible root synchronization: %w", err)
+	}
+	return SyncResult{
+		State:     current,
+		Root:      s.Root,
+		FromState: rootBase.ID,
+		Changed:   changed,
 	}, nil
+}
+
+func (s *Service) prepareRootMaterialization(ctx context.Context, targetTree string) (State, error) {
+	rootState, matches, err := s.visibleRootState(ctx)
+	if err != nil {
+		return State{}, err
+	}
+	if !matches {
+		materialized, materializedErr := s.Store.MaterializedHead(ctx)
+		if materializedErr != nil {
+			return State{}, materializedErr
+		}
+		actual, snapshotErr := s.Repo.WorktreeTree(ctx, materialized.SourceTree)
+		if snapshotErr != nil {
+			return State{}, snapshotErr
+		}
+		paths, pathErr := s.Repo.ChangedPaths(ctx, materialized.SourceTree, actual)
+		if pathErr != nil {
+			return State{}, pathErr
+		}
+		if len(paths) == 0 {
+			paths = []string{"."}
+		}
+		return State{}, &RootConflictError{Paths: paths}
+	}
+	if err := s.Repo.CheckIndexSafe(ctx, rootState.SourceTree); err != nil {
+		return State{}, err
+	}
+	materialized, err := s.Store.MaterializedHead(ctx)
+	if err != nil {
+		return State{}, err
+	}
+	if rootState.ID != materialized.ID {
+		if err := s.Store.CASMaterializedHead(ctx, materialized.ID, rootState.ID); err != nil {
+			return State{}, fmt.Errorf("repair visible root projection marker: %w", err)
+		}
+	}
+	conflicts, err := s.Repo.MaterializationConflicts(ctx, rootState.SourceTree, targetTree)
+	if err != nil {
+		return State{}, err
+	}
+	if len(conflicts) > 0 {
+		return State{}, &RootConflictError{
+			Paths:  conflicts,
+			Reason: "visible project root contains ignored or untracked paths that landing would overwrite",
+		}
+	}
+	return rootState, nil
+}
+
+func (s *Service) visibleRootState(ctx context.Context) (State, bool, error) {
+	materialized, err := s.Store.MaterializedHead(ctx)
+	if err != nil {
+		return State{}, false, err
+	}
+	actualTree, err := s.Repo.WorktreeTree(ctx, materialized.SourceTree)
+	if err != nil {
+		return State{}, false, err
+	}
+	if actualTree == materialized.SourceTree {
+		return materialized, true, nil
+	}
+	accepted, err := s.Store.AcceptedHead(ctx)
+	if err != nil {
+		return State{}, false, err
+	}
+	if accepted.ID == materialized.ID {
+		return State{}, false, nil
+	}
+	actualTree, err = s.Repo.WorktreeTree(ctx, accepted.SourceTree)
+	if err != nil {
+		return State{}, false, err
+	}
+	if actualTree == accepted.SourceTree {
+		return accepted, true, nil
+	}
+	return State{}, false, nil
 }
 
 func (s *Service) Undo(ctx context.Context) (State, error) {
@@ -681,6 +846,10 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 		return State{}, err
 	}
 	previous, err := s.Store.GetState(ctx, canonicalParent.StateID)
+	if err != nil {
+		return State{}, err
+	}
+	rootBase, err := s.prepareRootMaterialization(ctx, previous.SourceTree)
 	if err != nil {
 		return State{}, err
 	}
@@ -717,8 +886,17 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 	if err != nil {
 		return State{}, mapHeadError(err)
 	}
+	var postCommitErrors []error
 	if err := s.Repo.UpdateHiddenRef(ctx, acceptedRef, undo.GitCommit); err != nil {
-		return undo, &CommittedStateError{State: undo, Err: err}
+		postCommitErrors = append(postCommitErrors, fmt.Errorf("repair refs/hop/accepted: %w", err))
+	}
+	if err := s.Repo.MaterializeTree(ctx, rootBase.SourceTree, undo.SourceTree); err != nil {
+		postCommitErrors = append(postCommitErrors, fmt.Errorf("visible root %s was not synchronized: %w", s.Root, err))
+	} else if err := s.Store.CASMaterializedHead(ctx, rootBase.ID, undo.ID); err != nil {
+		postCommitErrors = append(postCommitErrors, fmt.Errorf("record visible root synchronization: %w", err))
+	}
+	if len(postCommitErrors) > 0 {
+		return undo, &CommittedStateError{State: undo, Err: errors.Join(postCommitErrors...)}
 	}
 	return undo, nil
 }
@@ -812,7 +990,33 @@ func (s *Service) History(ctx context.Context) ([]State, error) {
 }
 
 func (s *Service) Status(ctx context.Context) (Status, error) {
-	return s.Store.Status(ctx)
+	status, err := s.Store.Status(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	rootState, matches, err := s.visibleRootState(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	if !matches {
+		status.RootStatus = "diverged"
+		return status, nil
+	}
+	if err := s.Repo.CheckIndexSafe(ctx, rootState.SourceTree); err != nil {
+		var conflict *RootConflictError
+		if errors.As(err, &conflict) {
+			status.RootStatus = "diverged"
+			return status, nil
+		}
+		return Status{}, err
+	}
+	status.RootStateID = rootState.ID
+	if rootState.ID == status.AcceptedHead.ID {
+		status.RootStatus = "synchronized"
+	} else {
+		status.RootStatus = "stale"
+	}
+	return status, nil
 }
 
 func (s *Service) Diff(ctx context.Context, stateID string) (string, error) {

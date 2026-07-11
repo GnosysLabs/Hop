@@ -1,7 +1,7 @@
 interface:
   display_name: "Hop Version Control"
   short_description: "Capture every coding prompt before project effects"
-  default_prompt: "Use $hop to capture this prompt first, complete the task in its isolated workspace, and submit a validated proposal."
+  default_prompt: "Use $hop to capture this prompt first, complete the task in its isolated workspace, validate it, and auto-accept the proposal unless I explicitly request review first."
 
 policy:
   allow_implicit_invocation: true
