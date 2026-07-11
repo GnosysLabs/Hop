@@ -1,6 +1,17 @@
 # CLI reference
 
-Add `--json` anywhere in a command for machine-readable output.
+Add `--json` anywhere in a command for machine-readable output. Successful
+responses use this envelope:
+
+```json
+{
+  "ok": true,
+  "data": {}
+}
+```
+
+The JSON shape is an alpha contract and may evolve before the first tagged
+release.
 
 ## Project and prompt lifecycle
 

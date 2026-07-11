@@ -26,6 +26,12 @@ hop land R_... -- go test ./...
 No second landing authorization is requested unless the user explicitly asks
 for review-first behavior.
 
+Desktop capture stores the agent's verbatim transcription of the visible
+message and its attachment references. Because the skill runs after Codex
+receives the message, it cannot prove byte-for-byte fidelity with the raw
+submission. A trusted prompt-submission hook or controller is the deterministic
+capture boundary.
+
 ## Follow-up messages
 
 A later `hop begin` with the same Codex task session checkpoints existing
