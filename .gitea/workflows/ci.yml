@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  code: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: https://gitea.com/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Go
+        uses: https://gitea.com/actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with race detection
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Cross-compile supported targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            output="dist-smoke/hop_${os}_${arch}"
+            if [[ "$os" == windows ]]; then output="${output}.exe"; fi
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -o "$output" ./cmd/hop
+          done
+      - name: Validate POSIX installer syntax
+        run: sh -n scripts/install.sh
+      - name: Smoke-test POSIX installer
+        run: sh scripts/test-install.sh
+
+  powershell-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: https://gitea.com/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Go
+        uses: https://gitea.com/actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate PowerShell installer syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/install.ps1), [ref]$tokens, [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+      - name: Smoke-test PowerShell installer
+        shell: pwsh
+        run: ./scripts/test-install.ps1

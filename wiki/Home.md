@@ -1,0 +1,45 @@
+# Hop documentation
+
+Hop is prompt-native version control for coding agents. It stores each prompt
+as an immutable project state, gives agent work an isolated workspace, validates
+the exact tree being accepted, and safely materializes accepted results into the
+visible project folder.
+
+## Start here
+
+- [Installation](Installation)
+- [Getting started](Getting-Started)
+- [Core concepts](Core-Concepts)
+- [Codex Desktop and agent workflow](Agent-Workflow)
+- [Parallel agents and conflict resolution](Parallel-Agents-and-Conflicts)
+
+## Reference and operations
+
+- [CLI reference](CLI-Reference)
+- [Architecture](Architecture)
+- [Security and privacy](Security-and-Privacy)
+- [Troubleshooting](Troubleshooting)
+- [Upgrading and uninstalling](Upgrading-and-Uninstalling)
+- [Release checklist](Release-Checklist)
+
+## Thirty-second install
+
+macOS or Linux:
+
+```bash
+curl -fsSL https://githop.xyz/hop/hop/raw/branch/main/scripts/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://githop.xyz/hop/hop/raw/branch/main/scripts/install.ps1 | iex
+```
+
+Restart Codex Desktop, open a Git project, and ask Codex to work normally. The
+installed skill activates Hop before the agent inspects or changes the project;
+there is no separate prompt router and no required manual `hop init` step.
+
+Hop is currently an alpha. Keep Git history and normal backups, read release
+notes before upgrading, and report unexpected behavior with `hop doctor` output
+after removing private paths or data.

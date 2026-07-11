@@ -458,6 +458,24 @@ func TestCLILandConflictReturnsAutomaticReconciliation(t *testing.T) {
 	}
 }
 
+func TestCLIVersionUsesReleaseLinkerValue(t *testing.T) {
+	previous := Version
+	Version = "v1.2.3"
+	t.Cleanup(func() { Version = previous })
+
+	var stdout, stderr bytes.Buffer
+	if code := RunCLI([]string{"version", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("version exited %d: %s", code, stderr.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := response["version"].(string); got != "1.2.3" {
+		t.Fatalf("version = %q, want 1.2.3", got)
+	}
+}
+
 func TestOpenProjectInsideFinalValidationDoesNotReacquireAcceptanceLock(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})

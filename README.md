@@ -1,6 +1,6 @@
 # Hop
 
-Hop is an experimental prompt-native version-control kernel for coding agents.
+Hop is prompt-native version control for coding agents.
 
 Every instruction becomes an immutable state before project effects. Agent work produces checkpoint and proposal states beneath it. Landing a proposal creates a new accepted state and safely materializes it in the visible project folder without moving the user’s Git branch or real index. Controller integrations may capture the stronger pre-delivery boundary as well.
 
@@ -41,7 +41,9 @@ This repository contains the first local alpha kernel. It supports:
 
 It does not yet include a trusted raw-prompt hook, project knowledge, claims, remote synchronization, a GUI, or semantic merging.
 
-See [the product blueprint](docs/product-blueprint.md) for the complete model,
+Start with [Installation](#installation) and [Getting started](#getting-started),
+or browse the [documentation wiki](wiki/Home.md). See
+[the product blueprint](docs/product-blueprint.md) for the complete model,
 design principles, and phased roadmap.
 
 ## How the pieces fit
@@ -62,30 +64,106 @@ Agent                           validate → auto-land → accepted state
 
 The user continues typing into Codex Desktop normally. The skill invokes `hop begin` before inspecting or changing the project. `hop begin` initializes Hop when needed, uses `CODEX_THREAD_ID` to recognize follow-ups, checkpoints prior effects, and returns the isolated workspace. The skill confines work to that workspace, validates it, and automatically lands a successful proposal. `hop land` advances accepted state and then projects that exact tree into the selected folder. It proceeds only when the visible source still matches an accepted Hop state, so user edits are never overwritten. The original task prompt is the authorization; no extra landing prompt is required. Say `review first` or `proposal only` to opt into manual approval. This is a pre-project-effect boundary: the prompt is stored after Codex receives it but before the agent performs project work. A controller or future trusted prompt hook can provide strict pre-delivery capture.
 
-## Build
+## Installation
 
-Requires Go 1.26+ and Git 2.40+.
+Packaged releases require Git 2.40 or newer. Go is not required unless you use
+the developer installation path.
 
-```bash
-go build -o hop ./cmd/hop
-./hop help
-```
+### macOS and Linux — recommended
 
-## Quick start
-
-Install the embedded skill for Codex. By default this writes to `${CODEX_HOME:-~/.codex}/skills/hop`:
-
-```bash
-hop skill install
-```
-
-Export it to another agent’s skills directory with:
+The installer detects your operating system and CPU, downloads the matching
+release archive, verifies its SHA-256 checksum, installs `hop` to
+`~/.local/bin`, adds that directory to your shell PATH when necessary, and
+installs the Codex skill:
 
 ```bash
-hop skill install --path /path/to/agent/skills
+curl -fsSL https://githop.xyz/hop/hop/raw/branch/main/scripts/install.sh | sh
 ```
 
-Restart Codex after installation if the skill is not yet visible. Then use Codex Desktop normally. The skill is configured for implicit invocation on every local repository turn. Its first project action is equivalent to:
+To inspect the installer before running it:
+
+```bash
+curl -fsSLO https://githop.xyz/hop/hop/raw/branch/main/scripts/install.sh
+less install.sh
+sh install.sh
+```
+
+Pin a version or choose another destination with environment variables:
+
+```bash
+HOP_VERSION=v0.1.0 HOP_INSTALL_DIR="$HOME/bin" sh install.sh
+```
+
+### Windows PowerShell
+
+Run PowerShell as your normal user. The installer verifies the release,
+installs `hop.exe` under `%LOCALAPPDATA%\Programs\Hop`, adds it to your user
+PATH, and installs the Codex skill:
+
+```powershell
+irm https://githop.xyz/hop/hop/raw/branch/main/scripts/install.ps1 | iex
+```
+
+### Go install — developer path
+
+If Go 1.26 or newer is already installed:
+
+```bash
+go install githop.xyz/hop/hop/cmd/hop@latest
+hop skill install --force
+```
+
+Ensure `$(go env GOPATH)/bin` is on PATH. Tagged module builds report the tag
+through `hop version`.
+
+### Build from source
+
+Cloning is supported, but it is the contributor/fallback path rather than the
+normal product installation:
+
+```bash
+git clone https://githop.xyz/hop/hop.git
+cd hop
+go test ./...
+go build -trimpath -o hop ./cmd/hop
+mkdir -p "$HOME/.local/bin"
+install -m 755 hop "$HOME/.local/bin/hop"
+"$HOME/.local/bin/hop" skill install --force
+```
+
+### Verify the installation
+
+```bash
+hop version
+hop help
+```
+
+The packaged installers install two things:
+
+- the `hop` CLI; and
+- the embedded Hop agent skill at `${CODEX_HOME:-~/.codex}/skills/hop`.
+
+No project is modified during installation. A project receives its local
+`.hop/` state only when Hop first runs inside that project.
+
+Release installer URLs become available after the corresponding Gitea Release
+is published. Until the first public release exists, use the source build.
+
+## Getting started
+
+1. Install Hop using one of the methods above.
+2. Restart Codex Desktop if it was open during installation.
+3. Open any existing Git project in Codex Desktop.
+4. Ask Codex to change the project normally. You do **not** need to run
+   `hop init`, create a branch, or route prompts through another application.
+5. After the first task, run `hop status` in the project to inspect its accepted
+   state and confirm the visible root is synchronized.
+
+The skill is configured for implicit use on every local repository turn. If an
+agent ever fails to activate it automatically, mention `$hop` in that task as a
+deterministic fallback.
+
+The agent's first project action is equivalent to:
 
 ```bash
 hop begin --agent codex --heredoc <<'HOP_PROMPT_EOF'
@@ -93,9 +171,17 @@ hop begin --agent codex --heredoc <<'HOP_PROMPT_EOF'
 HOP_PROMPT_EOF
 ```
 
-The agent—not the user—runs this command. It initializes Hop without changing the current Git branch, working tree, or index, stores the prompt, and returns the state IDs and isolated workspace. Follow-up messages in the same Codex task automatically continue the same Hop attempt.
+The agent—not the user—runs this command. It initializes Hop without changing
+the current Git branch, working tree, or index, stores the prompt, and returns
+the state IDs and isolated workspace. Follow-up messages in the same Codex task
+automatically continue the same Hop attempt.
 
-Codex chooses implicitly invoked skills from their descriptions. Explicitly mentioning `$hop` remains the deterministic fallback if a task does not activate it automatically.
+For another agent runtime, export the embedded skill to that runtime's skills
+directory:
+
+```bash
+hop skill install --path /path/to/agent/skills --force
+```
 
 After editing the printed workspace, the agent runs this lifecycle automatically:
 

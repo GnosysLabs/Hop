@@ -1,0 +1,58 @@
+# Core concepts
+
+Hop versions intent and source together. Git remains the content store; Hop adds
+the causal state graph that explains which instruction produced which result.
+
+## States
+
+| Prefix | State | Meaning |
+|---|---|---|
+| `A_` | Accepted | Canonical Hop project revision |
+| `P_` | Prompt | Durable instruction and pre-effect context |
+| `C_` | Checkpoint | Immutable snapshot of attempt progress |
+| `R_` | Proposal | Frozen candidate result |
+| `F_` | Failed | Durable failed execution or validation result |
+| `X_` | Cancelled | Terminal cancelled result |
+
+Two states can reference the same Git tree and still be distinct occurrences.
+For example, a prompt and checkpoint may contain identical files but represent
+different moments and causal roles.
+
+## Task
+
+A task groups the prompts and attempts pursuing one user outcome. Follow-up
+messages in the same Codex task stay connected automatically through
+`CODEX_THREAD_ID`.
+
+## Attempt and workspace
+
+An attempt is one agent approach. Each attempt has a detached Git worktree under
+`.hop/workspaces/`. Agents edit there instead of racing in the visible project
+root.
+
+## Evidence
+
+`hop check` snapshots the workspace and runs validation against that immutable
+tree. Evidence stores the command, redacted output, exit code, and exact tree
+hash.
+
+## Proposal
+
+`hop propose` freezes a candidate tree. Later workspace edits cannot mutate the
+proposal.
+
+## Landing
+
+`hop land` composes the proposal onto the current accepted state, runs optional
+final-tree validation, advances accepted history with compare-and-swap, and
+safely materializes the result into the visible project directory.
+
+`hop accept` is lower-level controller behavior: it advances internal accepted
+state but intentionally leaves the visible folder unchanged.
+
+## Visible root
+
+The visible root is the project directory selected in Codex. Hop only
+materializes into it when it still matches an accepted Hop ancestor. Untracked,
+ignored, staged, or ordinary file divergence that could be overwritten causes a
+fail-closed error.

@@ -1,4 +1,4 @@
-module github.com/hop-vcs/hop
+module githop.xyz/hop/hop
 
 go 1.26
 

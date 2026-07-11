@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 )
 
@@ -39,7 +40,19 @@ Usage:
 Add --json anywhere for machine-readable output.
 `
 
-const Version = "0.1.0-alpha.4"
+// Version is replaced by GoReleaser through -ldflags. Source installs made by
+// `go install module@version` fall back to the module version in Go build info.
+var Version = "dev"
+
+func effectiveVersion() string {
+	if Version != "" && Version != "dev" {
+		return strings.TrimPrefix(Version, "v")
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return strings.TrimPrefix(info.Main.Version, "v")
+	}
+	return "dev"
+}
 
 func RunCLI(args []string, stdout, stderr io.Writer) int {
 	return RunCLIWithInput(args, os.Stdin, stdout, stderr)
@@ -56,10 +69,11 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 	command := args[0]
 	commandArgs := args[1:]
 	if command == "version" || command == "--version" {
+		version := effectiveVersion()
 		if jsonOutput {
-			writeJSON(stdout, map[string]any{"ok": true, "version": Version})
+			writeJSON(stdout, map[string]any{"ok": true, "version": version})
 		} else {
-			fmt.Fprintf(stdout, "hop %s\n", Version)
+			fmt.Fprintf(stdout, "hop %s\n", version)
 		}
 		return 0
 	}

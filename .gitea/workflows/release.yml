@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  code: read
+  releases: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: https://gitea.com/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: https://gitea.com/actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Require a public-release license
+        run: test -f LICENSE
+      - name: Test with race detection
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build and upload a draft Gitea Release
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=2.17.0
+          case "$(uname -m)" in
+            x86_64|amd64)
+              arch=x86_64
+              expected=dde10e2d5a13cef969c0eec00c74f359c0ac306d702b1bd291ad9337b4e54c1d
+              ;;
+            aarch64|arm64)
+              arch=arm64
+              expected=75f93fc0e25d10d8535ffd0e4abcf39d6784a2467ba453d479ae513729a9ebbf
+              ;;
+            *)
+              echo "Unsupported release runner architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          archive="goreleaser_Linux_${arch}.tar.gz"
+          tmp_dir=$(mktemp -d)
+          trap 'rm -rf "$tmp_dir"' EXIT
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            -o "$tmp_dir/$archive" \
+            "https://github.com/goreleaser/goreleaser/releases/download/v${version}/${archive}"
+          printf '%s  %s\n' "$expected" "$tmp_dir/$archive" | sha256sum -c -
+          tar -xzf "$tmp_dir/$archive" -C "$tmp_dir" goreleaser
+          "$tmp_dir/goreleaser" release --clean

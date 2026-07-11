@@ -1,0 +1,71 @@
+version: 2
+
+project_name: hop
+
+builds:
+  - id: hop
+    main: ./cmd/hop
+    binary: hop
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    goamd64:
+      - v1
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X githop.xyz/hop/hop/internal/hop.Version={{ .Version }}
+
+archives:
+  - id: release
+    ids:
+      - hop
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    # Stable names keep installer asset lookup deterministic across releases.
+    name_template: "hop_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+gitea_urls:
+  api: https://githop.xyz/api/v1
+  download: https://githop.xyz
+  skip_tls_verify: false
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs?:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  gitea:
+    owner: hop
+    name: hop
+  draft: true
+  prerelease: auto
