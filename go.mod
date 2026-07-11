@@ -1,4 +1,4 @@
-module githop.xyz/hop/hop
+module githop.xyz/GnosysLabs/Hop
 
 go 1.26
 

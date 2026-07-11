@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$GiteaUrl = $(if ($env:HOP_GITEA_URL) { $env:HOP_GITEA_URL } else { "https://githop.xyz" }),
-    [string]$Repository = $(if ($env:HOP_REPOSITORY) { $env:HOP_REPOSITORY } else { "hop/hop" }),
+    [string]$Repository = $(if ($env:HOP_REPOSITORY) { $env:HOP_REPOSITORY } else { "GnosysLabs/Hop" }),
     [string]$Version = $(if ($env:HOP_VERSION) { $env:HOP_VERSION } else { "latest" }),
     [string]$InstallDir = $(if ($env:HOP_INSTALL_DIR) { $env:HOP_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\Hop" }),
     [switch]$SkipSkill,

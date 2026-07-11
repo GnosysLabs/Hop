@@ -51,4 +51,4 @@ tracks which accepted state is physically visible, allowing safe catch-up with
 `hop sync` without treating a divergent folder as disposable.
 
 For the full product direction, read the
-[product blueprint](https://githop.xyz/hop/hop/src/branch/main/docs/product-blueprint.md).
+[product blueprint](https://githop.xyz/GnosysLabs/Hop/src/branch/main/docs/product-blueprint.md).

@@ -5,20 +5,20 @@
 Rerun the installer. It replaces the binary and refreshes the embedded skill:
 
 ```bash
-curl -fsSL https://githop.xyz/hop/hop/raw/branch/main/scripts/install.sh | sh
+curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | sh
 ```
 
 Pin a release when required:
 
 ```bash
-curl -fsSL https://githop.xyz/hop/hop/raw/branch/main/scripts/install.sh | \
+curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | \
   HOP_VERSION=v0.1.0 sh
 ```
 
 Windows:
 
 ```powershell
-irm https://githop.xyz/hop/hop/raw/branch/main/scripts/install.ps1 -OutFile install.ps1
+irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1 -Version v0.1.0
 Remove-Item install.ps1
 ```
@@ -36,7 +36,7 @@ Restart Codex Desktop when the installed skill changed.
 ## Upgrade Go installations
 
 ```bash
-go install githop.xyz/hop/hop/cmd/hop@latest
+go install githop.xyz/GnosysLabs/Hop/cmd/hop@latest
 hop skill install --force
 ```
 

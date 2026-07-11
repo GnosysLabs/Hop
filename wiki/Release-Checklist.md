@@ -3,12 +3,12 @@
 Hop releases are built on `githop.xyz` by Gitea Actions and uploaded by
 GoReleaser as draft Gitea Releases.
 
-The examples assume the canonical repository is `githop.xyz/hop/hop`.
+The canonical repository is `githop.xyz/GnosysLabs/Hop`.
 
 ## One-time Gitea setup
 
-- Create the `hop/hop` repository and set its default branch to `main`.
-- Configure `origin` as `https://githop.xyz/hop/hop.git`.
+- Create the `GnosysLabs/Hop` repository and set its default branch to `main`.
+- Configure `origin` as `https://githop.xyz/GnosysLabs/Hop.git`.
 - Run a currently patched Gitea 1.26.x or newer, enable Actions, and enable
   Actions for the repository. Hop's least-privilege workflow uses the 1.26 job
   token permission model.
@@ -30,7 +30,7 @@ The examples assume the canonical repository is `githop.xyz/hop/hop`.
 - Add `SECURITY.md` with a monitored private disclosure address.
 - Create an offline-controlled release-signing key, publish its public key, and
   add detached signing for `checksums.txt` before general availability.
-- Confirm the `githop.xyz/hop/hop` Go import path serves valid `go-import`
+- Confirm the `githop.xyz/GnosysLabs/Hop` Go import path serves valid `go-import`
   metadata.
 - Back up the Gitea database, repositories, release attachments, and Actions
   secrets.

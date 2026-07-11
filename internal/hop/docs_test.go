@@ -56,7 +56,7 @@ func TestProductDocumentationUsesCanonicalGiteaHost(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(contents)
-		if !strings.Contains(text, "githop.xyz") {
+		if !strings.Contains(text, "githop.xyz/GnosysLabs/Hop") {
 			t.Errorf("%s does not name the canonical distribution host", relative)
 		}
 		if strings.Contains(text, "raw.githubusercontent.com/hop-vcs/hop") ||

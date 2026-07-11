@@ -27,13 +27,13 @@ visible project folder.
 macOS or Linux:
 
 ```bash
-curl -fsSL https://githop.xyz/hop/hop/raw/branch/main/scripts/install.sh | sh
+curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://githop.xyz/hop/hop/raw/branch/main/scripts/install.ps1 | iex
+irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
 ```
 
 Restart Codex Desktop, open a Git project, and ask Codex to work normally. The

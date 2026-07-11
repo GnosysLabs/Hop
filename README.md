@@ -77,13 +77,13 @@ release archive, verifies its SHA-256 checksum, installs `hop` to
 installs the Codex skill:
 
 ```bash
-curl -fsSL https://githop.xyz/hop/hop/raw/branch/main/scripts/install.sh | sh
+curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | sh
 ```
 
 To inspect the installer before running it:
 
 ```bash
-curl -fsSLO https://githop.xyz/hop/hop/raw/branch/main/scripts/install.sh
+curl -fsSLO https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh
 less install.sh
 sh install.sh
 ```
@@ -101,7 +101,7 @@ installs `hop.exe` under `%LOCALAPPDATA%\Programs\Hop`, adds it to your user
 PATH, and installs the Codex skill:
 
 ```powershell
-irm https://githop.xyz/hop/hop/raw/branch/main/scripts/install.ps1 | iex
+irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
 ```
 
 ### Go install — developer path
@@ -109,7 +109,7 @@ irm https://githop.xyz/hop/hop/raw/branch/main/scripts/install.ps1 | iex
 If Go 1.26 or newer is already installed:
 
 ```bash
-go install githop.xyz/hop/hop/cmd/hop@latest
+go install githop.xyz/GnosysLabs/Hop/cmd/hop@latest
 hop skill install --force
 ```
 
@@ -122,7 +122,7 @@ Cloning is supported, but it is the contributor/fallback path rather than the
 normal product installation:
 
 ```bash
-git clone https://githop.xyz/hop/hop.git
+git clone https://githop.xyz/GnosysLabs/Hop.git
 cd hop
 go test ./...
 go build -trimpath -o hop ./cmd/hop

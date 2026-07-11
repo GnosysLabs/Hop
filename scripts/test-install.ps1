@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Path $fixtures, $payload | Out-Null
 try {
     $binary = Join-Path $payload "hop.exe"
     & go build -trimpath `
-        -ldflags "-X githop.xyz/hop/hop/internal/hop.Version=9.9.9-installer-test" `
+        -ldflags "-X githop.xyz/GnosysLabs/Hop/internal/hop.Version=9.9.9-installer-test" `
         -o $binary (Join-Path $root "cmd/hop")
     if ($LASTEXITCODE -ne 0) { throw "Could not build installer test binary" }
 
@@ -55,7 +55,7 @@ try {
 
     & (Join-Path $root "scripts/install.ps1") `
         -GiteaUrl "https://gitea.test" `
-        -Repository "hop/hop" `
+        -Repository "GnosysLabs/Hop" `
         -InstallDir $installDir `
         -SkipSkill `
         -SkipPath

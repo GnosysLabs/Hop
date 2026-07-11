@@ -3,7 +3,7 @@ set -eu
 
 gitea_url=${HOP_GITEA_URL:-https://githop.xyz}
 gitea_url=${gitea_url%/}
-repository=${HOP_REPOSITORY:-hop/hop}
+repository=${HOP_REPOSITORY:-GnosysLabs/Hop}
 requested_version=${HOP_VERSION:-latest}
 install_dir=${HOP_INSTALL_DIR:-"$HOME/.local/bin"}
 install_skill=${HOP_INSTALL_SKILL:-1}

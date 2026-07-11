@@ -23,7 +23,7 @@ esac
 asset="hop_${os}_${arch}.tar.gz"
 mkdir -p "$tmp_dir/payload" "$tmp_dir/fixtures" "$tmp_dir/mock-bin" "$tmp_dir/home"
 go build -trimpath \
-  -ldflags '-X githop.xyz/hop/hop/internal/hop.Version=9.9.9-installer-test' \
+  -ldflags '-X githop.xyz/GnosysLabs/Hop/internal/hop.Version=9.9.9-installer-test' \
   -o "$tmp_dir/payload/hop" "$root/cmd/hop"
 tar -czf "$tmp_dir/fixtures/$asset" -C "$tmp_dir/payload" hop
 if command -v sha256sum >/dev/null 2>&1; then
@@ -67,7 +67,7 @@ HOME="$tmp_dir/home" \
 PATH="$tmp_dir/mock-bin:$PATH" \
 HOP_TEST_FIXTURES="$tmp_dir/fixtures" \
 HOP_GITEA_URL="https://gitea.test" \
-HOP_REPOSITORY="hop/hop" \
+HOP_REPOSITORY="GnosysLabs/Hop" \
 HOP_INSTALL_DIR="$tmp_dir/home/bin" \
 HOP_MODIFY_PATH=0 \
 sh "$root/scripts/install.sh"

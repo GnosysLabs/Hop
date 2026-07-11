@@ -22,7 +22,7 @@ builds:
     ldflags:
       - >-
         -s -w
-        -X githop.xyz/hop/hop/internal/hop.Version={{ .Version }}
+        -X githop.xyz/GnosysLabs/Hop/internal/hop.Version={{ .Version }}
 
 archives:
   - id: release
@@ -65,7 +65,7 @@ changelog:
 
 release:
   gitea:
-    owner: hop
-    name: hop
+    owner: GnosysLabs
+    name: Hop
   draft: true
   prerelease: auto
