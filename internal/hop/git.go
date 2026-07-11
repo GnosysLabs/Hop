@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -110,8 +109,8 @@ func EnsureRepository(path string) (*Repository, error) {
 	return NewGitStore().Ensure(context.Background(), path)
 }
 
-// OpenRepository opens the repository containing path and adds .hop/ to its
-// per-repository exclude file.
+// OpenRepository opens the repository containing path and keeps Hop's local
+// runtime private while leaving its portable record ledger versionable.
 func OpenRepository(path string) (*Repository, error) {
 	return NewGitStore().Open(context.Background(), path)
 }
@@ -255,8 +254,9 @@ func (r *Repository) GitDir() string { return r.gitDir }
 // worktrees.
 func (r *Repository) CommonGitDir() string { return r.commonGitDir }
 
-// EnsureHopExcluded adds .hop/ to .git/info/exclude without changing tracked
-// files or the repository's public .gitignore.
+// EnsureHopExcluded keeps the SQLite cache and disposable workspaces private
+// without excluding .hop/records. The records directory is intentionally
+// versionable so a repository can carry Hop's portable causal history.
 func (r *Repository) EnsureHopExcluded() error {
 	infoDir := filepath.Join(r.commonGitDir, "info")
 	if err := os.MkdirAll(infoDir, 0o755); err != nil {
@@ -267,26 +267,27 @@ func (r *Repository) EnsureHopExcluded() error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read Git exclude file: %w", err)
 	}
+	lines := make([]string, 0)
 	for _, line := range strings.Split(string(contents), "\n") {
 		if strings.TrimSuffix(line, "\r") == ".hop/" {
-			return nil
+			continue // Migrate the legacy blanket exclusion.
 		}
+		lines = append(lines, line)
 	}
-
-	file, err := os.OpenFile(excludePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("open Git exclude file: %w", err)
-	}
-	defer file.Close()
-	if len(contents) > 0 && contents[len(contents)-1] != '\n' {
-		if _, err := io.WriteString(file, "\n"); err != nil {
-			return fmt.Errorf("complete Git exclude line: %w", err)
+	updated := strings.Join(lines, "\n")
+	if !strings.Contains(updated, ".hop/*\n") {
+		if updated != "" && !strings.HasSuffix(updated, "\n") {
+			updated += "\n"
 		}
+		updated += "# Hop local runtime; .hop/records is intentionally versioned.\n.hop/*\n!.hop/records/\n!.hop/records/**\n"
 	}
-	if _, err := io.WriteString(file, ".hop/\n"); err != nil {
-		return fmt.Errorf("exclude .hop directory: %w", err)
+	if updated == string(contents) {
+		return nil
 	}
-	return file.Sync()
+	if err := os.WriteFile(excludePath, []byte(updated), 0o644); err != nil {
+		return fmt.Errorf("write Git exclude file: %w", err)
+	}
+	return nil
 }
 
 // Head returns the current HEAD commit. exists is false for an unborn branch.

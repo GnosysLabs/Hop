@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 )
@@ -24,6 +25,7 @@ Usage:
   hop accept STATE [-- COMMAND [ARG...]]
   hop land STATE [-- COMMAND [ARG...]]
   hop refresh PROPOSAL
+  hop export [--output PATH]
   hop sync
   hop push
   hop status
@@ -203,6 +205,29 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		if len(commandArgs) != 1 {
 			fmt.Fprintln(stderr, "usage: hop checkpoint STATE")
 			return 2
+		}
+
+	case "export":
+		fs := flag.NewFlagSet("export", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		output := fs.String("output", "", "write the portable prompt ledger beneath this directory")
+		if err := fs.Parse(commandArgs); err != nil || len(fs.Args()) != 0 {
+			if err == nil {
+				fmt.Fprintln(stderr, "usage: hop export [--output PATH]")
+			}
+			return 2
+		}
+		ledger, err := service.ExportPromptLedger(ctx, *output)
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		value = ledger
+		if !jsonOutput {
+			root := *output
+			if root == "" {
+				root = service.Root
+			}
+			fmt.Fprintf(stdout, "Exported %d prompt records to %s\n", len(ledger.Prompts), filepath.Join(root, ".hop", "records", "prompts"))
 		}
 		state, err := service.Checkpoint(ctx, commandArgs[0])
 		if err != nil {

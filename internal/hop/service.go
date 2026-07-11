@@ -33,8 +33,10 @@ func InitProject(ctx context.Context, path string) (*Service, State, error) {
 	if err != nil {
 		return nil, State{}, err
 	}
-	if len(trackedHopPaths) > 0 {
-		return nil, State{}, fmt.Errorf("cannot initialize Hop: .hop is already tracked as project source (for example %s)", trackedHopPaths[0])
+	for _, trackedPath := range trackedHopPaths {
+		if !strings.HasPrefix(filepath.ToSlash(trackedPath), ".hop/records/") {
+			return nil, State{}, fmt.Errorf("cannot initialize Hop: local .hop runtime path is already tracked (for example %s)", trackedPath)
+		}
 	}
 	hopDir := filepath.Join(root, ".hop")
 	if err := os.MkdirAll(filepath.Join(hopDir, "workspaces"), 0o755); err != nil {
@@ -480,6 +482,19 @@ func (s *Service) checkpointAttempt(ctx context.Context, attempt Attempt) (State
 }
 
 func (s *Service) RunCheck(ctx context.Context, stateID string, argv []string) (Check, error) {
+	state, err := s.Store.GetState(ctx, stateID)
+	if err != nil {
+		return Check{}, err
+	}
+	if state.AttemptID != "" {
+		attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
+		if err != nil {
+			return Check{}, err
+		}
+		if _, err := s.ExportPromptLedger(ctx, attempt.Workspace, attempt.ID); err != nil {
+			return Check{}, err
+		}
+	}
 	checkpoint, err := s.Checkpoint(ctx, stateID)
 	if err != nil {
 		return Check{}, err
@@ -563,6 +578,9 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	}
 	workspaceRepo, err := OpenRepository(attempt.Workspace)
 	if err != nil {
+		return ProposalResult{}, err
+	}
+	if _, err := s.ExportPromptLedger(ctx, attempt.Workspace, attempt.ID); err != nil {
 		return ProposalResult{}, err
 	}
 	commit, tree, err := workspaceRepo.Snapshot(ctx, "hop: proposal\n")
@@ -726,6 +744,8 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	if err != nil {
 		return AcceptResult{}, err
 	}
+	proposalPaths = withoutPortableHopRecords(proposalPaths)
+	currentPaths = withoutPortableHopRecords(currentPaths)
 	finalTree := proposal.SourceTree
 	if current.SourceTree != base.SourceTree {
 		var mergeConflicts []string
@@ -873,6 +893,17 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	}
 	s.attachAutomaticPush(ctx, &result)
 	return result, nil
+}
+
+func withoutPortableHopRecords(paths []string) []string {
+	filtered := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.HasPrefix(path, ".hop/records/") {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	return filtered
 }
 
 func (s *Service) attachAutomaticPush(ctx context.Context, result *AcceptResult) {
