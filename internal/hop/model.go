@@ -86,13 +86,25 @@ type AcceptResult struct {
 	Warnings      []string `json:"warnings,omitempty"`
 }
 
+type PromptRedaction struct {
+	Kind  string `json:"kind"`
+	Count int    `json:"count"`
+}
+
 type PromptResult struct {
-	Prompt     State    `json:"prompt"`
-	Checkpoint *State   `json:"checkpoint,omitempty"`
-	Task       Task     `json:"task"`
-	Attempt    Attempt  `json:"attempt"`
-	Workspace  string   `json:"workspace"`
-	Deliver    []string `json:"deliver"`
+	Prompt     State             `json:"prompt"`
+	Checkpoint *State            `json:"checkpoint,omitempty"`
+	Task       Task              `json:"task"`
+	Attempt    Attempt           `json:"attempt"`
+	Workspace  string            `json:"workspace"`
+	Deliver    []string          `json:"deliver"`
+	Redactions []PromptRedaction `json:"redactions,omitempty"`
+}
+
+type BeginResult struct {
+	PromptResult
+	Initialized bool   `json:"initialized"`
+	SessionID   string `json:"session_id,omitempty"`
 }
 
 type EnvironmentResult struct {

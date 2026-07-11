@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 var (
 	ErrNotFound            = errors.New("hop: not found")
@@ -137,20 +137,21 @@ type migration struct {
 	statements []string
 }
 
-var migrations = []migration{{
-	version: 1,
-	statements: []string{
-		`CREATE TABLE IF NOT EXISTS meta (
+var migrations = []migration{
+	{
+		version: 1,
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		) STRICT`,
-		`CREATE TABLE IF NOT EXISTS tasks (
+			`CREATE TABLE IF NOT EXISTS tasks (
 			id TEXT PRIMARY KEY,
 			title TEXT NOT NULL,
 			status TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		) STRICT`,
-		`CREATE TABLE IF NOT EXISTS states (
+			`CREATE TABLE IF NOT EXISTS states (
 			id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL,
 			task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED,
@@ -164,7 +165,7 @@ var migrations = []migration{{
 			digest TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		) STRICT`,
-		`CREATE TABLE IF NOT EXISTS attempts (
+			`CREATE TABLE IF NOT EXISTS attempts (
 			id TEXT PRIMARY KEY,
 			task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
 			agent TEXT NOT NULL,
@@ -174,7 +175,7 @@ var migrations = []migration{{
 			status TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		) STRICT`,
-		`CREATE TABLE IF NOT EXISTS state_parents (
+			`CREATE TABLE IF NOT EXISTS state_parents (
 			state_id TEXT NOT NULL REFERENCES states(id) ON DELETE CASCADE,
 			parent_state_id TEXT NOT NULL REFERENCES states(id) ON DELETE RESTRICT,
 			role TEXT NOT NULL,
@@ -182,7 +183,7 @@ var migrations = []migration{{
 			PRIMARY KEY (state_id, parent_order),
 			UNIQUE (state_id, parent_state_id, role)
 		) STRICT`,
-		`CREATE TABLE IF NOT EXISTS checks (
+			`CREATE TABLE IF NOT EXISTS checks (
 			id TEXT PRIMARY KEY,
 			attempt_id TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
 			state_id TEXT REFERENCES states(id) ON DELETE SET NULL,
@@ -192,7 +193,7 @@ var migrations = []migration{{
 			output TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		) STRICT`,
-		`CREATE TABLE IF NOT EXISTS events (
+			`CREATE TABLE IF NOT EXISTS events (
 			id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL,
 			task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
@@ -201,20 +202,35 @@ var migrations = []migration{{
 			payload_json TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		) STRICT`,
-		`CREATE INDEX IF NOT EXISTS states_task_created_idx ON states(task_id, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS states_attempt_created_idx ON states(attempt_id, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS states_kind_created_idx ON states(kind, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS state_parents_parent_idx ON state_parents(parent_state_id, state_id)`,
-		`CREATE INDEX IF NOT EXISTS state_parents_role_idx ON state_parents(state_id, role, parent_order)`,
-		`CREATE INDEX IF NOT EXISTS attempts_task_created_idx ON attempts(task_id, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS attempts_status_created_idx ON attempts(status, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS checks_attempt_tree_idx ON checks(attempt_id, tree_hash, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS checks_tree_idx ON checks(tree_hash, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS events_created_idx ON events(created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS events_task_idx ON events(task_id, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS events_attempt_idx ON events(attempt_id, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS states_task_created_idx ON states(task_id, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS states_attempt_created_idx ON states(attempt_id, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS states_kind_created_idx ON states(kind, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS state_parents_parent_idx ON state_parents(parent_state_id, state_id)`,
+			`CREATE INDEX IF NOT EXISTS state_parents_role_idx ON state_parents(state_id, role, parent_order)`,
+			`CREATE INDEX IF NOT EXISTS attempts_task_created_idx ON attempts(task_id, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS attempts_status_created_idx ON attempts(status, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS checks_attempt_tree_idx ON checks(attempt_id, tree_hash, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS checks_tree_idx ON checks(tree_hash, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS events_created_idx ON events(created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS events_task_idx ON events(task_id, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS events_attempt_idx ON events(attempt_id, created_at, id)`,
+		},
 	},
-}}
+	{
+		version: 2,
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS agent_sessions (
+				agent TEXT NOT NULL,
+				session_id TEXT NOT NULL,
+				head_state_id TEXT NOT NULL REFERENCES states(id) ON DELETE RESTRICT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (agent, session_id)
+			) STRICT`,
+			`CREATE INDEX IF NOT EXISTS agent_sessions_head_idx ON agent_sessions(head_state_id)`,
+		},
+	},
+}
 
 func (s *Store) migrate(ctx context.Context) error {
 	var current int
@@ -337,6 +353,48 @@ func (s *Store) IsInitialized(ctx context.Context) (bool, error) {
 	return err == nil, err
 }
 
+// AgentSessionHead returns the latest prompt state associated with an agent
+// session. Session heads let interactive agents turn follow-up messages into
+// descendants without asking the human to carry Hop state IDs between turns.
+func (s *Store) AgentSessionHead(ctx context.Context, agent, sessionID string) (string, bool, error) {
+	if strings.TrimSpace(agent) == "" || strings.TrimSpace(sessionID) == "" {
+		return "", false, errors.New("hop: agent and session ID are required")
+	}
+	var stateID string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT head_state_id FROM agent_sessions WHERE agent = ? AND session_id = ?`,
+		agent, sessionID).Scan(&stateID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read agent session head: %w", err)
+	}
+	return stateID, true, nil
+}
+
+// SetAgentSessionHead records the prompt state that should parent the next
+// message in an interactive agent session.
+func (s *Store) SetAgentSessionHead(ctx context.Context, agent, sessionID, stateID string) error {
+	if strings.TrimSpace(agent) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(stateID) == "" {
+		return errors.New("hop: agent, session ID, and state ID are required")
+	}
+	if redacted, findings := RedactPromptSecrets(agent + "\n" + sessionID); len(findings) > 0 || redacted != agent+"\n"+sessionID {
+		return errors.New("hop: refusing to persist a potential credential in agent session metadata")
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_sessions(agent, session_id, head_state_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(agent, session_id) DO UPDATE SET
+		   head_state_id = excluded.head_state_id,
+		   updated_at = excluded.updated_at`,
+		agent, sessionID, stateID, now, now); err != nil {
+		return fmt.Errorf("record agent session head: %w", err)
+	}
+	return nil
+}
+
 // CreateTaskAttemptPrompt atomically creates all three records. The prompt is
 // durable and the attempt head points to it before the transaction becomes
 // visible, so an orchestrator may safely deliver the prompt after this returns.
@@ -360,6 +418,7 @@ func (s *Store) CreateTaskAttemptPrompt(
 	if task.Title == "" {
 		task.Title = prompt.Prompt
 	}
+	task.Title, _ = RedactPromptSecrets(task.Title)
 	if attempt.ID == "" {
 		attempt.ID = newID("at")
 	}
@@ -946,6 +1005,8 @@ func (s *Store) AddCheck(ctx context.Context, check Check) (Check, error) {
 	if check.CreatedAt.IsZero() {
 		check.CreatedAt = time.Now().UTC()
 	}
+	check.Command, _ = redactSecretStrings(check.Command)
+	check.Output, _ = RedactPromptSecrets(check.Output)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Check{}, fmt.Errorf("begin check creation: %w", err)
@@ -1345,6 +1406,15 @@ func insertStateTx(ctx context.Context, tx *sql.Tx, state State, parents []Paren
 	if state.CreatedAt.IsZero() {
 		return errors.New("hop: state creation time is required")
 	}
+	for name, value := range map[string]string{
+		"prompt":  state.Prompt,
+		"summary": state.Summary,
+		"agent":   state.Agent,
+	} {
+		if redacted, findings := RedactPromptSecrets(value); len(findings) > 0 || redacted != value {
+			return fmt.Errorf("hop: refusing to persist an unredacted credential in state %s", name)
+		}
+	}
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO states(
 			id, kind, task_id, attempt_id, canonical_anchor_id, source_tree, git_commit,
@@ -1385,6 +1455,9 @@ func insertEventTx(ctx context.Context, tx *sql.Tx, event Event, payload any) er
 		if err != nil {
 			return fmt.Errorf("encode event payload: %w", err)
 		}
+	}
+	if redacted, findings := RedactPromptSecrets(string(encoded)); len(findings) > 0 || redacted != string(encoded) {
+		return fmt.Errorf("hop: refusing to persist an unredacted credential in event %q", event.Kind)
 	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO events(id, kind, task_id, attempt_id, state_id, payload_json, created_at)

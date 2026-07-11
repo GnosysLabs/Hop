@@ -4,7 +4,7 @@
 
 ```text
 A accepted
-├─ P prompt, persisted before effects
+├─ P prompt, persisted before project effects
 │  └─ C checkpoint
 │     └─ R proposal
 └─ P independent prompt
@@ -35,7 +35,9 @@ Prompt, checkpoint, and proposal states may reference identical Git trees while 
 | `HOP_ATTEMPT_ID` | Current agent approach/run |
 | `HOP_WORKSPACE` | Only directory the agent may modify |
 
-Treat missing variables as an invalid agent launch. Do not infer an attempt from a nearby worktree when causality matters.
+Interactive agents may begin without these variables. `hop begin` returns the
+equivalent IDs and workspace, while `CODEX_THREAD_ID` binds later messages in
+the same Codex task to the existing attempt.
 
 ## Command contract
 
@@ -57,6 +59,9 @@ hop undo
 ### Agent
 
 ```bash
+hop begin --agent codex --heredoc <<'HOP_PROMPT_EOF'
+<exact current user message>
+HOP_PROMPT_EOF
 hop state "$HOP_STATE_ID" --json
 hop status --json
 hop check "$HOP_STATE_ID" -- <command>
@@ -68,6 +73,17 @@ hop propose --summary "<summary>" "$HOP_STATE_ID"
 `hop propose` freezes the current nonignored workspace tree. Later workspace edits cannot change the proposal.
 
 `hop land` compares paths changed by the proposal with paths accepted since its base. Any shared changed path blocks landing. Disjoint proposals are composed with Git three-tree plumbing and may then be validated on the final tree.
+
+`hop begin` is the Codex Desktop entry point. It initializes Hop when necessary,
+captures the current message before the agent performs project work, and uses
+`CODEX_THREAD_ID` as the default session key. A later `hop begin` in the same
+Codex task checkpoints the prior workspace before appending the follow-up
+prompt state.
+
+Pass the original message to `hop begin` without model-side redaction. Hop's
+sanitizer replaces detected credential values before any durable write and
+returns only typed redaction counts. Do not place the value in any later
+command, summary, output, or source file.
 
 ## Exit codes
 
@@ -82,7 +98,17 @@ hop propose --summary "<summary>" "$HOP_STATE_ID"
 
 A failed `hop check` or final landing check persists its evidence. A blocked or failed landing does not advance accepted state.
 
-## Human launch sequence
+## Capture modes
+
+### Codex Desktop skill
+
+The user types normally in Codex Desktop. The Hop skill makes `hop begin` its
+first project action and then directs every operation into the returned
+workspace. This is a pre-project-effect boundary: Codex has already received
+the prompt, but no repository inspection, command, or modification may precede
+the durable prompt state.
+
+### Controller-grade pre-delivery capture
 
 ```bash
 hop init
@@ -96,13 +122,19 @@ eval "$(hop env P_...)"
 <agent-command> "<the same exact prompt>"
 ```
 
-The exact agent command is harness-specific. Until a Hop process adapter intercepts prompts automatically, follow-up prompts must also pass through `hop prompt` before the agent acts.
+The exact agent command is harness-specific. This stronger mode stores the
+prompt before the model receives it. A future trusted prompt-submission hook can
+provide the same boundary inside compatible agent clients.
 
 ## Failure handling
 
-- **Missing Hop environment:** stop before editing and request a Hop-controlled launch.
+- **Missing Hop environment:** run `hop begin` before project work and use the returned state and workspace.
 - **Check failure:** fix the live workspace, checkpoint/check again, then create a new proposal.
 - **Frozen proposal needs changes:** record a follow-up prompt; never mutate the stored proposal.
 - **Overlap on landing:** retain both lineages and reconcile through a new prompt against current accepted state.
 - **Ref inconsistency:** run `hop doctor`; use `hop doctor --repair` only outside final validation.
-- **Secrets:** prompt text and check output are stored locally without encryption in the alpha. Never place credentials in them.
+- **Secrets:** Hop redacts high-confidence provider keys plus contextual tokens,
+  passwords, private keys, authorization headers, and credential-bearing URLs
+  before durable storage. It also sanitizes recorded check commands/output and
+  proposal summaries. Detection is defense in depth, not a substitute for
+  environment variables or a secret manager. Never repeat a detected secret.

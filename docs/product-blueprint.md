@@ -279,6 +279,7 @@ A plausible CLI:
 
 ```bash
 hop init
+hop begin --agent codex --heredoc          # agent first action in Codex Desktop
 hop run --agent codex "Add password reset emails"
 hop run --agent claude "Redesign account settings"
 hop prompt P185 "Use Resend, not SendGrid"
@@ -307,7 +308,7 @@ hop state checkpoint --manifest checkpoint.json --json
 hop propose --manifest result.json --json
 ```
 
-The orchestrator should durably create the prompt-state, task/attempt grouping, and workspace before launching an agent, then inject `HOP_STATE_ID`, `HOP_TASK_ID`, `HOP_ATTEMPT_ID`, and the workspace path. The skill teaches the workflow; the process boundary enforces it.
+Hop supports two capture strengths. In Codex Desktop, the skill makes `hop begin` the agent's first project action, providing a practical pre-effect boundary without changing the user's prompt-box workflow. A trusted prompt hook or orchestrator can durably create the prompt-state, task/attempt grouping, and workspace before model delivery, then inject `HOP_STATE_ID`, `HOP_TASK_ID`, `HOP_ATTEMPT_ID`, and the workspace path. The skill teaches and applies the workflow; a hook or process boundary can enforce the stronger pre-delivery invariant.
 
 ## The MVP
 
@@ -316,9 +317,9 @@ The smallest complete product is a **parallel-agent landing queue** backed by Gi
 ### It must do
 
 1. Initialize Hop inside an existing Git repository.
-2. Turn every submitted prompt into a durable child state before agent execution.
+2. Turn every submitted prompt into a durable child state before project effects, with a pre-delivery mode where the harness supports it.
 3. Create a task/attempt grouping and isolated Git worktree from the prompt’s parent state.
-4. Launch or attach Codex and Claude Code through thin adapters.
+4. Attach Codex Desktop through a skill/session binding and support thin controller adapters for other agents.
 5. Capture immutable checkpoint, proposal, failure, and cancellation states beneath each prompt-state.
 6. Record claims, actual changed files, agent/environment identity, and status.
 7. Show the universal state graph and detect claim/file overlap.
@@ -329,6 +330,8 @@ The smallest complete product is a **parallel-agent landing queue** backed by Gi
 12. Undo an accepted state through a compensating prompt/integration state.
 13. Generate a small `PROJECT.md` from accepted facts.
 14. Install a vendor-neutral agent skill and expose stable JSON CLI output.
+15. Redact credentials before prompt text reaches state digests, titles, events,
+    validation evidence, or any durable database/write-ahead-log page.
 
 ### It should not do yet
 
@@ -366,7 +369,7 @@ The smallest complete product is a **parallel-agent landing queue** backed by Gi
 ### Week 2: attempts and proposals
 
 - Codex and Claude adapters
-- immutable prompt-state creation before delivery, plus checkpoint and proposal states
+- skill-driven pre-effect capture, controller-grade pre-delivery capture, checkpoint states, and proposal states
 - claims with leases
 - proposal nomination and receipts that reference sealed states
 
@@ -473,7 +476,12 @@ Only accepted prompt-states or integration states can introduce facts. Require p
 
 ### Prompt history leaks secrets
 
-Separate private transcripts from shareable receipts. Redact secrets, support configurable retention, and encrypt sensitive local records. Never require hidden model reasoning to be stored.
+Make secret removal a pre-persistence boundary, not a display filter. Retain a
+typed redaction marker and count, but never the credential, a reversible form,
+or a credential hash. Apply the same sanitizer to summaries, recorded commands,
+and check output. Separate private transcripts from shareable receipts, support
+configurable retention, and encrypt sensitive local records. Never require
+hidden model reasoning to be stored.
 
 ### Claims create deadlocks
 

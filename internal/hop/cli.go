@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -14,7 +15,8 @@ const usageText = `Hop — prompt-native version control
 
 Usage:
   hop init [path]
-  hop prompt [--from STATE] [--agent NAME] "instruction"
+  hop begin [--agent NAME] [--session ID] [--from STATE] (--stdin | --heredoc | "instruction")
+  hop prompt [--from STATE] [--agent NAME] (--stdin | --heredoc | "instruction")
   hop checkpoint STATE
   hop check STATE -- COMMAND [ARG...]
   hop propose [--summary TEXT] STATE
@@ -34,9 +36,13 @@ Usage:
 Add --json anywhere for machine-readable output.
 `
 
-const Version = "0.1.0-alpha.1"
+const Version = "0.1.0-alpha.2"
 
 func RunCLI(args []string, stdout, stderr io.Writer) int {
+	return RunCLIWithInput(args, os.Stdin, stdout, stderr)
+}
+
+func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	jsonOutput, args := removeFlag(args, "--json")
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Fprint(stdout, usageText)
@@ -80,6 +86,64 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	if command == "begin" {
+		fs := flag.NewFlagSet("begin", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		from := fs.String("from", "", "continue from an explicit Hop state")
+		sessionDefault := os.Getenv("CODEX_THREAD_ID")
+		session := fs.String("session", sessionDefault, "stable interactive-agent session ID")
+		agentDefault := os.Getenv("HOP_AGENT")
+		if agentDefault == "" {
+			if sessionDefault != "" {
+				agentDefault = "codex"
+			} else {
+				agentDefault = "agent"
+			}
+		}
+		agent := fs.String("agent", agentDefault, "agent or harness name")
+		stdinPrompt := fs.Bool("stdin", false, "read exact prompt bytes from stdin")
+		heredocPrompt := fs.Bool("heredoc", false, "read prompt from stdin and remove one shell-added final newline")
+		if err := fs.Parse(commandArgs); err != nil {
+			return 2
+		}
+		message, err := promptMessage(stdin, fs.Args(), *stdinPrompt, *heredocPrompt)
+		if err != nil {
+			fmt.Fprintf(stderr, "hop begin: %v\n", err)
+			return 2
+		}
+
+		service, err := OpenProject(".")
+		initialized := false
+		if errors.Is(err, ErrNotHopProject) {
+			service, _, err = InitProject(ctx, ".")
+			initialized = err == nil
+		}
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		defer service.Close()
+
+		result, err := service.BeginPrompt(ctx, message, *from, *agent, *session)
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		begin := BeginResult{PromptResult: result, Initialized: initialized, SessionID: *session}
+		if jsonOutput {
+			writeJSON(stdout, map[string]any{"ok": true, "data": begin})
+		} else {
+			writeRedactionNotice(stderr, result.Redactions)
+			if initialized {
+				fmt.Fprintf(stdout, "Initialized Hop at %s\n", service.Root)
+			}
+			if result.Checkpoint != nil {
+				fmt.Fprintf(stdout, "Checkpointed %s before the follow-up\n", result.Checkpoint.ID)
+			}
+			fmt.Fprintf(stdout, "Captured prompt state %s before project effects\nWorkspace: %s\n", result.Prompt.ID, result.Workspace)
+			fmt.Fprintf(stdout, "Use HOP_STATE_ID=%s HOP_TASK_ID=%s HOP_ATTEMPT_ID=%s for this turn.\n", result.Prompt.ID, result.Task.ID, result.Attempt.ID)
+		}
+		return 0
+	}
+
 	service, err := OpenProject(".")
 	if err != nil {
 		return printCLIError(err, jsonOutput, stdout, stderr)
@@ -93,20 +157,23 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 		fs.SetOutput(stderr)
 		from := fs.String("from", "", "continue an existing attempt")
 		agent := fs.String("agent", "", "agent or harness name")
+		stdinPrompt := fs.Bool("stdin", false, "read exact prompt bytes from stdin")
+		heredocPrompt := fs.Bool("heredoc", false, "read prompt from stdin and remove one shell-added final newline")
 		if err := fs.Parse(commandArgs); err != nil {
 			return 2
 		}
-		if len(fs.Args()) != 1 || strings.TrimSpace(fs.Args()[0]) == "" {
-			fmt.Fprintln(stderr, "exactly one non-empty prompt argument is required; quote prompts containing spaces")
+		message, err := promptMessage(stdin, fs.Args(), *stdinPrompt, *heredocPrompt)
+		if err != nil {
+			fmt.Fprintf(stderr, "hop prompt: %v\n", err)
 			return 2
 		}
-		message := fs.Args()[0]
 		result, err := service.CreatePrompt(ctx, message, *from, *agent)
 		if err != nil {
 			return printCLIError(err, jsonOutput, stdout, stderr)
 		}
 		value = result
 		if !jsonOutput {
+			writeRedactionNotice(stderr, result.Redactions)
 			if result.Checkpoint != nil {
 				fmt.Fprintf(stdout, "Checkpointed %s before the follow-up\n", result.Checkpoint.ID)
 			}
@@ -450,6 +517,57 @@ func splitOptionalCommand(args []string) (string, []string, bool) {
 		return args[0], args[2:], true
 	}
 	return "", nil, false
+}
+
+const maxPromptBytes = 16 << 20
+
+func promptMessage(stdin io.Reader, args []string, rawStdin, heredoc bool) (string, error) {
+	if rawStdin && heredoc {
+		return "", errors.New("use only one of --stdin or --heredoc")
+	}
+	if !rawStdin && !heredoc {
+		if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+			return "", errors.New("provide exactly one non-empty prompt argument, or use --stdin/--heredoc")
+		}
+		return args[0], nil
+	}
+	if len(args) != 0 {
+		return "", errors.New("do not combine a prompt argument with --stdin or --heredoc")
+	}
+	data, err := io.ReadAll(io.LimitReader(stdin, maxPromptBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read prompt from stdin: %w", err)
+	}
+	if len(data) > maxPromptBytes {
+		return "", fmt.Errorf("prompt exceeds %d bytes", maxPromptBytes)
+	}
+	message := string(data)
+	if heredoc {
+		if strings.HasSuffix(message, "\r\n") {
+			message = strings.TrimSuffix(message, "\r\n")
+		} else {
+			message = strings.TrimSuffix(message, "\n")
+		}
+	}
+	if strings.TrimSpace(message) == "" {
+		return "", errors.New("prompt text is required")
+	}
+	return message, nil
+}
+
+func writeRedactionNotice(w io.Writer, redactions []PromptRedaction) {
+	total := 0
+	for _, redaction := range redactions {
+		total += redaction.Count
+	}
+	if total == 0 {
+		return
+	}
+	noun := "credentials"
+	if total == 1 {
+		noun = "credential"
+	}
+	fmt.Fprintf(w, "Warning: redacted %d potential %s before storing the prompt.\n", total, noun)
 }
 
 func writeJSON(w io.Writer, value any) {

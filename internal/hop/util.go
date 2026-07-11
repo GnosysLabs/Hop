@@ -20,6 +20,8 @@ import (
 
 const maxRecordedOutput = 128 * 1024
 
+var ErrNotHopProject = errors.New("not inside a Hop project")
+
 func FindHopRoot(start string) (string, error) {
 	if configured := os.Getenv("HOP_ROOT"); configured != "" {
 		return requireHopRoot(configured)
@@ -48,7 +50,7 @@ func FindHopRoot(start string) (string, error) {
 			break
 		}
 	}
-	return "", fmt.Errorf("not inside a Hop project; run 'hop init' first")
+	return "", fmt.Errorf("%w; run 'hop init' first", ErrNotHopProject)
 }
 
 func requireHopRoot(root string) (string, error) {

@@ -120,6 +120,76 @@ func TestCLIJSONWorkflow(t *testing.T) {
 	}
 }
 
+func TestCLIBeginAutoInitializesAndContinuesCodexSession(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	firstPrompt := "  Add a Desktop-safe file\nwithout changing this spacing.  "
+	started := runCLIJSONInputTest(t,
+		[]string{"begin", "--agent", "codex", "--session", "thread-test", "--heredoc", "--json"},
+		firstPrompt+"\n")
+	first := objectField(t, started, "data")
+	if initialized, _ := first["initialized"].(bool); !initialized {
+		t.Fatal("begin did not report automatic Hop initialization")
+	}
+	firstState := objectField(t, first, "prompt")
+	if got := stringField(t, firstState, "prompt"); got != firstPrompt {
+		t.Fatalf("heredoc prompt = %q, want %q", got, firstPrompt)
+	}
+	firstAttempt := objectField(t, first, "attempt")
+	workspace := stringField(t, first, "workspace")
+	writeTestFile(t, filepath.Join(workspace, "desktop.txt"), "first turn\n")
+
+	followupPrompt := "Now preserve this final newline.\n"
+	followed := runCLIJSONInputTest(t,
+		[]string{"begin", "--agent", "codex", "--session", "thread-test", "--stdin", "--json"},
+		followupPrompt)
+	second := objectField(t, followed, "data")
+	if initialized, _ := second["initialized"].(bool); initialized {
+		t.Fatal("follow-up begin unexpectedly reinitialized Hop")
+	}
+	secondState := objectField(t, second, "prompt")
+	if got := stringField(t, secondState, "prompt"); got != followupPrompt {
+		t.Fatalf("stdin prompt = %q, want %q", got, followupPrompt)
+	}
+	secondAttempt := objectField(t, second, "attempt")
+	if stringField(t, secondAttempt, "id") != stringField(t, firstAttempt, "id") {
+		t.Fatal("Codex session follow-up created a new attempt")
+	}
+	if stringField(t, second, "workspace") != workspace {
+		t.Fatal("Codex session follow-up changed workspaces")
+	}
+	checkpoint := objectField(t, second, "checkpoint")
+	if stringField(t, checkpoint, "kind") != string(StateCheckpoint) {
+		t.Fatal("Codex session follow-up did not checkpoint prior effects")
+	}
+
+	service, err := OpenProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	head, exists, err := service.Store.AgentSessionHead(context.Background(), "codex", "thread-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists || head != stringField(t, secondState, "id") {
+		t.Fatalf("session head = %q, %v; want second prompt", head, exists)
+	}
+	assertTreeFiles(t, service, stringField(t, checkpoint, "git_commit"), map[string]string{
+		"base.txt":    "base\n",
+		"desktop.txt": "first turn\n",
+	})
+}
+
 func TestDoctorRejectsCommitTreeAndDigestMismatch(t *testing.T) {
 	ctx := context.Background()
 	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
@@ -547,6 +617,22 @@ func runCLIJSONTest(t *testing.T, args []string) map[string]any {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	if code := RunCLI(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("hop %s exited %d\nstdout: %s\nstderr: %s", strings.Join(args, " "), code, stdout.String(), stderr.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode JSON from hop %s: %v\n%s", strings.Join(args, " "), err, stdout.String())
+	}
+	if ok, _ := result["ok"].(bool); !ok {
+		t.Fatalf("hop %s returned non-ok JSON: %#v", strings.Join(args, " "), result)
+	}
+	return result
+}
+
+func runCLIJSONInputTest(t *testing.T, args []string, input string) map[string]any {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	if code := RunCLIWithInput(args, strings.NewReader(input), &stdout, &stderr); code != 0 {
 		t.Fatalf("hop %s exited %d\nstdout: %s\nstderr: %s", strings.Join(args, " "), code, stdout.String(), stderr.String())
 	}
 	var result map[string]any

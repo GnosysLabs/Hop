@@ -26,6 +26,13 @@ func TestInstallSkillBundle(t *testing.T) {
 			t.Fatalf("installed %s is empty", relative)
 		}
 	}
+	metadata, err := os.ReadFile(filepath.Join(result.Path, "agents", "openai.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metadata), "allow_implicit_invocation: true") {
+		t.Fatal("installed skill does not permit Desktop implicit invocation")
+	}
 	if _, err := InstallSkill(base, false); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("second install error = %v, want existing-skill error", err)
 	}
@@ -57,7 +64,7 @@ func TestSkillCLIWorksOutsideHopProject(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	code = RunCLI([]string{"skill", "print"}, &stdout, &stderr)
-	if code != 0 || !strings.Contains(stdout.String(), "Require a durable Hop prompt state") {
+	if code != 0 || !strings.Contains(stdout.String(), "Capture the current prompt first") {
 		t.Fatalf("skill print exited %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
 	}
 }

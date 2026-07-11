@@ -2,7 +2,7 @@
 
 Hop is an experimental prompt-native version-control kernel for coding agents.
 
-Every instruction becomes an immutable state before it is delivered. Agent work produces checkpoint and proposal states beneath it. Landing a proposal creates a new accepted state without moving the user’s Git branch or checkout.
+Every instruction becomes an immutable state before project effects. Agent work produces checkpoint and proposal states beneath it. Landing a proposal creates a new accepted state without moving the user’s Git branch or checkout. Controller integrations may capture the stronger pre-delivery boundary as well.
 
 ```text
 A0 accepted
@@ -22,7 +22,8 @@ Git provides source-tree storage, diffs, worktrees, and interoperability. Hop’
 This repository contains the first local alpha kernel. It supports:
 
 - Existing and unborn Git repositories
-- Pre-delivery prompt states
+- Codex Desktop first-action prompt capture and session-aware follow-ups
+- Controller-grade pre-delivery prompt capture
 - Isolated detached worktrees per attempt
 - Immutable checkpoints and proposals
 - Checks bound to exact source trees
@@ -33,9 +34,10 @@ This repository contains the first local alpha kernel. It supports:
 - Forward-only undo of the latest accepted transition
 - Git-compatible accepted commits under `refs/hop/accepted`
 - SQLite WAL state graph and machine-readable JSON output
-- Embedded, installable vendor-neutral agent skill
+- Pre-persistence credential redaction across prompts, summaries, and check evidence
+- Embedded, installable vendor-neutral agent skill with implicit invocation enabled
 
-It does not yet include an agent-process adapter, project knowledge, claims, remote synchronization, a GUI, or semantic merging.
+It does not yet include a trusted raw-prompt hook, project knowledge, claims, remote synchronization, a GUI, or semantic merging.
 
 See [the product blueprint](docs/product-blueprint.md) for the complete model,
 design principles, and phased roadmap.
@@ -43,20 +45,19 @@ design principles, and phased roadmap.
 ## How the pieces fit
 
 ```text
-Human/controller
-  │  records exact prompt
+Prompt in Codex Desktop
+  │
   ▼
-hop start ──> prompt state + isolated workspace
-                              │
-                              ▼
-                       agent + Hop skill
-                       edit → check → propose
-                              │
-                              ▼
-Human/controller       review → land → accepted state
+Hop skill's first action ──> hop begin ──> prompt state + workspace
+                                                │
+                                                ▼
+                                      edit → check → propose
+                                                │
+                                                ▼
+Human                                  review → land → accepted state
 ```
 
-The controller owns prompt delivery and acceptance. The skill teaches the agent how to behave inside the assigned state. The Hop kernel computes and stores trees, evidence, ancestry, conflicts, and accepted history. A skill alone cannot guarantee that an initial prompt was saved before the agent saw it; `hop start` or a future process adapter must create that boundary first.
+The user continues typing into Codex Desktop normally. The skill invokes `hop begin` before inspecting or changing the project. `hop begin` initializes Hop when needed, uses `CODEX_THREAD_ID` to recognize follow-ups, checkpoints prior effects, and returns the isolated workspace. The skill then confines work to that workspace. This is a pre-project-effect boundary: the prompt is stored after Codex receives it but before the agent performs project work. A controller or future trusted prompt hook can provide strict pre-delivery capture.
 
 ## Build
 
@@ -81,28 +82,17 @@ Export it to another agent’s skills directory with:
 hop skill install --path /path/to/agent/skills
 ```
 
-Initialize Hop without changing the current Git branch, working tree, or index:
+Restart Codex after installation if the skill is not yet visible. Then use Codex Desktop normally. The skill is configured for implicit invocation on every local repository turn. Its first project action is equivalent to:
 
 ```bash
-hop init
+hop begin --agent codex --heredoc <<'HOP_PROMPT_EOF'
+<the current user message>
+HOP_PROMPT_EOF
 ```
 
-Create a prompt state and isolated workspace. The string passed to `hop start` must be the same instruction delivered to the agent:
+The agent—not the user—runs this command. It initializes Hop without changing the current Git branch, working tree, or index, stores the prompt, and returns the state IDs and isolated workspace. Follow-up messages in the same Codex task automatically continue the same Hop attempt.
 
-```bash
-PROMPT='Use $hop. Add password reset emails'
-hop start --agent codex "$PROMPT"
-```
-
-Pass the prompt as one quoted argument; Hop preserves its bytes, including leading/trailing whitespace and newlines. Hop prints the prompt-state ID, task/attempt IDs, workspace, and environment. The prompt is durable before the command returns, so it is then safe to deliver to an agent.
-
-Load the environment and enter the isolated workspace using the returned prompt-state ID:
-
-```bash
-eval "$(hop env P_...)"
-```
-
-Now launch Codex, Claude Code, or another harness from that workspace and deliver `$PROMPT`. Explicitly invoking `$hop` is the most reliable way to load the skill. The skill verifies the Hop state, confines edits to the workspace, records exact-tree checks, and freezes the result as a proposal.
+Codex chooses implicitly invoked skills from their descriptions. Explicitly mentioning `$hop` remains the deterministic fallback if a task does not activate it automatically.
 
 After the agent edits the printed workspace:
 
@@ -131,15 +121,17 @@ Inspect or hand the skill to a harness without installing it:
 hop skill print
 ```
 
-Create a follow-up prompt in an existing attempt:
+For a harness or controller that can capture prompts before delivery, initialize and start explicitly:
 
 ```bash
-hop prompt --from P_... "Use Resend instead of SendGrid"
+hop init
+hop start --agent codex --heredoc <<'HOP_PROMPT_EOF'
+Add password reset emails
+HOP_PROMPT_EOF
+eval "$(hop env P_...)"
 ```
 
-Hop first captures the workspace as a checkpoint, then writes the follow-up prompt as its child before returning.
-
-Load the returned prompt state with `eval "$(hop env P_...)"` before delivering that exact follow-up to the agent.
+In this mode, deliver the same message only after `hop start` succeeds. Use `hop prompt --from P_... --heredoc` for controller-managed follow-ups.
 
 Undo the latest accepted transition without rewriting history:
 
@@ -195,7 +187,7 @@ Add `--json` anywhere:
 
 ```bash
 hop --json status
-hop start --agent codex --json "Add password reset"
+hop begin --agent codex --heredoc --json
 ```
 
 Successful output follows:
@@ -215,4 +207,8 @@ Hop currently treats any shared changed path as a conflict. Disjoint files can s
 
 Agent-reported scope and test claims are never used as the source of truth. Hop computes source trees and changed paths itself.
 
-Prompt text and check output are currently stored locally in SQLite without encryption or redaction. Do not put credentials or sensitive secrets into this alpha ledger.
+Non-secret prompt text and check output are stored locally in SQLite without encryption. Before persistence, Hop redacts high-confidence provider tokens and contextual credentials, private keys, authorization headers, and credential-bearing URLs. The same boundary sanitizes proposal summaries plus recorded validation commands and output.
+
+Detection cannot recognize every private or future token format. Prefer environment variables or a secret manager, and rotate any real credential pasted into any agent prompt even when Hop reports that it redacted the value.
+
+Skill-driven Desktop capture stores the agent's verbatim transcription of the visible message and attachment references. It cannot prove byte-for-byte fidelity with Codex's raw submission. A trusted `UserPromptSubmit` hook is the future deterministic capture boundary; the skill remains the no-UI-change alpha workflow.

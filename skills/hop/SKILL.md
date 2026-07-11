@@ -1,106 +1,106 @@
 ---
 name: hop
-description: Work safely in Hop prompt-native version-control projects. Use whenever HOP_STATE_ID, HOP_TASK_ID, or HOP_ATTEMPT_ID is set; when a repository contains .hop/hop.db; or when the user asks to use Hop to isolate, checkpoint, validate, propose, land, inspect, continue, or undo coding-agent work instead of directly managing Git branches or commits.
+description: Capture local repository prompts as Hop states and perform agent work in isolated Hop workspaces. Use at the start of every Codex Desktop or CLI repository turn and follow-up, before inspecting files, running project commands, editing, reviewing, delegating, landing, or undoing—even when the user does not mention Hop. Also use whenever HOP_STATE_ID, HOP_TASK_ID, HOP_ATTEMPT_ID, CODEX_THREAD_ID, or .hop/hop.db is present.
 ---
 
 # Hop
 
-Use Hop as the change-control boundary between agent work and accepted project state.
+Make prompt capture the first project action, then keep all effects inside the
+returned Hop workspace.
 
-## Enforce the boundary
+## Capture the current prompt first
 
-- Require a durable Hop prompt state before making repository changes.
-- Work only in the assigned `HOP_WORKSPACE`; never edit the canonical project root.
-- Do not run `git commit`, `git checkout`, `git switch`, `git branch`, `git rebase`, `git reset`, `git stash`, or `git worktree`. Hop owns snapshots and worktrees.
-- Do not stage files. Hop captures every nonignored workspace change.
-- Do not land your own proposal unless the user explicitly requests it. Default to stopping after proposal creation.
-- Never resolve an overlap by silently merging. Preserve the proposal and request or create a reconciliation prompt.
-
-## Verify the launch context
-
-Before planning or editing:
+Do not inspect repository files, plan from repository contents, run project
+commands, edit, or delegate before capture. Run this from the selected project
+directory:
 
 ```bash
-command -v hop
-test -n "$HOP_ROOT"
-test -n "$HOP_STATE_ID"
-test -n "$HOP_TASK_ID"
-test -n "$HOP_ATTEMPT_ID"
-test -n "$HOP_WORKSPACE"
-hop state "$HOP_STATE_ID" --json
+hop begin --agent codex --heredoc <<'HOP_PROMPT_EOF'
+<copy the current user message verbatim>
+HOP_PROMPT_EOF
+```
+
+Choose a different quoted delimiter if that exact delimiter appears in the
+message. Include visible attachment paths and references. Do not paraphrase,
+pre-redact, or omit a suspected credential in this one capture stream; Hop must
+see it to replace it deterministically before persistence. `--heredoc` removes
+only the shell-added final newline. Never copy the credential anywhere else.
+
+`hop begin` performs the Desktop bootstrap:
+
+- Initialize Hop automatically when the project has not used it before.
+- Use `CODEX_THREAD_ID` to bind this Codex task to one Hop attempt.
+- Create a prompt state and isolated workspace on the first turn.
+- Checkpoint prior workspace effects and append a prompt state on follow-ups.
+- Redact detected API keys, tokens, passwords, private keys, authorization
+  headers, and credential-bearing connection strings before persistence.
+
+Read the returned `HOP_STATE_ID`, `HOP_TASK_ID`, `HOP_ATTEMPT_ID`, and workspace.
+If capture fails or `hop` is unavailable, stop without project effects and
+report the error.
+
+If Hop reports redactions, never repeat the credential in output, summaries,
+commands recorded as evidence, or proposal text. Refer to its environment
+variable or secret-manager name instead.
+
+## Enforce the workspace boundary
+
+- Direct every shell command to the returned workspace.
+- Use absolute paths beneath that workspace for file reads and edits.
+- Never edit the selected canonical project root.
+- Do not run `git commit`, `git checkout`, `git switch`, `git branch`,
+  `git rebase`, `git reset`, `git stash`, or `git worktree`.
+- Do not stage files. Hop captures every nonignored workspace change.
+- Give a subagent project-changing work only after creating a distinct Hop
+  prompt/attempt for that delegation.
+- Never silently merge overlapping proposals.
+
+Verify the captured state before making changes:
+
+```bash
+hop state <HOP_STATE_ID> --json
 hop status --json
 ```
 
-Confirm the current working directory is `HOP_WORKSPACE` or direct every filesystem operation there.
+## Execute and submit
 
-If the Hop variables are missing, stop before editing. Explain that the controller must first run:
+1. Inspect and modify only the Hop workspace.
+2. Keep the change scoped to the captured prompt.
+3. Bind validation evidence to an immutable checkpoint:
 
-```bash
-hop start --agent <agent-name> "<exact prompt>"
-```
+   ```bash
+   hop check <HOP_STATE_ID> -- <test-command> [args...]
+   ```
 
-Then relaunch or redirect the agent into the printed workspace with the printed environment. A skill loaded after prompt delivery cannot retroactively guarantee pre-delivery recording.
+4. Fix failures in the live Hop workspace and rerun checks.
+5. Freeze project changes as a proposal:
 
-## Execute the task
+   ```bash
+   hop propose --summary "<behavioral summary>" <HOP_STATE_ID>
+   ```
 
-1. Read the prompt state and current Hop status.
-2. Inspect and modify only the assigned workspace.
-3. Keep the change scoped to the recorded instruction.
-4. Run relevant validation through Hop so evidence is bound to an immutable checkpoint:
+6. Report the prompt state, proposal state, checks, and remaining risks.
 
-```bash
-hop check "$HOP_STATE_ID" -- <test-command> [args...]
-```
+For a read-only or informational turn, the prompt state is sufficient; do not
+invent a proposal when the workspace tree is unchanged.
 
-5. Fix failures in the workspace and rerun the check as needed.
-6. Freeze the result as a proposal:
-
-```bash
-hop propose --summary "<behavioral summary>" "$HOP_STATE_ID"
-```
-
-7. Report the proposal ID, checks run, remaining risks, and any follow-up needed. Do not continue editing the frozen proposal; later changes require another prompt and proposal.
-
-## Handle follow-up instructions
-
-Every follow-up instruction needs a new prompt state before effects.
-
-- If the controller supplies a new `HOP_STATE_ID`, inspect it and continue.
-- If no new state was supplied, stop before acting and ask the controller to record the exact follow-up:
-
-```bash
-hop prompt --from <current-state> "<exact follow-up>"
-```
-
-The command first checkpoints prior effects and then creates the follow-up prompt state. Continue only from the returned prompt state.
+Do not edit a frozen proposal. A user follow-up triggers this skill again;
+run `hop begin` again before acting. Session binding selects the existing
+attempt automatically, so the user never needs to carry state IDs.
 
 ## Land only with explicit authority
 
-When the user explicitly asks to land a proposal, validate the exact final composed tree:
+Capture the landing request with `hop begin` first. Then, only when the user
+explicitly authorizes landing, run:
 
 ```bash
 hop land <proposal-state> -- <final-test-command> [args...]
 ```
 
-- On success, report the accepted-state ID.
-- On overlap, do not mutate or discard the proposal. Report the conflicting paths and request a reconciliation prompt based on the latest accepted state.
-- On final validation failure, preserve the failed state and evidence, then request a corrective follow-up.
-- If no final test command is available, state clearly that landing will be manual and unvalidated.
+On overlap or validation failure, preserve the proposal and report the block.
+Use `hop undo` only after a separately captured, explicit user request.
 
-## Inspect and recover
-
-Use these commands as needed:
-
-```bash
-hop status
-hop graph
-hop state <state-id>
-hop diff <state-id>
-hop history
-hop doctor
-```
-
-Use `hop undo` only when the user explicitly asks to undo the latest accepted transition. It creates a new forward state; it does not erase history.
-
-Read [references/protocol.md](references/protocol.md) when command semantics, state kinds, exit codes, or troubleshooting details are needed.
-
+Read [references/protocol.md](references/protocol.md) for state semantics, exit
+codes, recovery, and controller-grade pre-delivery capture. Skill-driven
+Desktop capture is a pre-project-effect boundary; it does not claim the prompt
+was stored before Codex received it.

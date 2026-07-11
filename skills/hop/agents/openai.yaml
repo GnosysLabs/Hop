@@ -1,4 +1,7 @@
 interface:
   display_name: "Hop Version Control"
-  short_description: "Safely coordinate and land agent work with Hop"
-  default_prompt: "Use $hop to complete this coding task in an isolated Hop state and submit a validated proposal."
+  short_description: "Capture every coding prompt before project effects"
+  default_prompt: "Use $hop to capture this prompt first, complete the task in its isolated workspace, and submit a validated proposal."
+
+policy:
+  allow_implicit_invocation: true

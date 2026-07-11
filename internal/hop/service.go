@@ -113,7 +113,16 @@ func OpenProject(start string) (*Service, error) {
 		store.Close()
 		return nil, err
 	}
-	if filepath.Clean(recordedRoot) != filepath.Clean(root) {
+	recordedInfo, recordedErr := os.Stat(recordedRoot)
+	rootInfo, rootErr := os.Stat(root)
+	if recordedErr != nil || rootErr != nil {
+		store.Close()
+		if recordedErr != nil {
+			return nil, fmt.Errorf("inspect recorded Hop root: %w", recordedErr)
+		}
+		return nil, fmt.Errorf("inspect discovered Hop root: %w", rootErr)
+	}
+	if !os.SameFile(recordedInfo, rootInfo) {
 		store.Close()
 		return nil, fmt.Errorf("Hop database belongs to %s, not %s", recordedRoot, root)
 	}
@@ -137,10 +146,58 @@ func (s *Service) CreatePrompt(ctx context.Context, message, fromStateID, agent 
 	if strings.TrimSpace(message) == "" {
 		return PromptResult{}, fmt.Errorf("prompt text is required")
 	}
+	message, redactions := RedactPromptSecrets(message)
+	agent, _ = RedactPromptSecrets(agent)
+	var result PromptResult
+	var err error
 	if fromStateID == "" {
-		return s.createInitialPrompt(ctx, message, agent)
+		result, err = s.createInitialPrompt(ctx, message, agent)
+	} else {
+		result, err = s.createFollowupPrompt(ctx, message, fromStateID, agent)
 	}
-	return s.createFollowupPrompt(ctx, message, fromStateID, agent)
+	if err != nil {
+		return PromptResult{}, err
+	}
+	result.Redactions = redactions
+	return result, nil
+}
+
+// BeginPrompt is the interactive-agent entry point. It resolves follow-up
+// ancestry from a stable harness session ID, creates the prompt state before
+// project effects, and advances the session pointer for the next turn.
+func (s *Service) BeginPrompt(ctx context.Context, message, fromStateID, agent, sessionID string) (PromptResult, error) {
+	if strings.TrimSpace(agent) == "" {
+		agent = "agent"
+	}
+	if redactedAgent, findings := RedactPromptSecrets(agent); len(findings) > 0 || redactedAgent != agent {
+		return PromptResult{}, errors.New("hop: refusing to use a potential credential as an agent name")
+	}
+	if redactedSession, findings := RedactPromptSecrets(sessionID); len(findings) > 0 || redactedSession != sessionID {
+		return PromptResult{}, errors.New("hop: refusing to use a potential credential as an agent session ID")
+	}
+	release, err := acquireProjectLock(ctx, s.Root, "prompt")
+	if err != nil {
+		return PromptResult{}, err
+	}
+	defer release()
+
+	if fromStateID == "" && sessionID != "" {
+		if stateID, exists, err := s.Store.AgentSessionHead(ctx, agent, sessionID); err != nil {
+			return PromptResult{}, err
+		} else if exists {
+			fromStateID = stateID
+		}
+	}
+	result, err := s.CreatePrompt(ctx, message, fromStateID, agent)
+	if err != nil {
+		return PromptResult{}, err
+	}
+	if sessionID != "" {
+		if err := s.Store.SetAgentSessionHead(ctx, agent, sessionID, result.Prompt.ID); err != nil {
+			return PromptResult{}, err
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) createInitialPrompt(ctx context.Context, message, agent string) (PromptResult, error) {
@@ -364,14 +421,16 @@ func (s *Service) RunCheck(ctx context.Context, stateID string, argv []string) (
 	if removeErr != nil {
 		return Check{}, removeErr
 	}
+	storedCommand, _ := redactSecretStrings(argv)
+	storedOutput, _ := RedactPromptSecrets(result.Output)
 	check := Check{
 		ID:        checkID,
 		AttemptID: attempt.ID,
 		StateID:   checkpoint.ID,
 		TreeHash:  checkpoint.SourceTree,
-		Command:   append([]string(nil), argv...),
+		Command:   storedCommand,
 		ExitCode:  result.ExitCode,
-		Output:    result.Output,
+		Output:    storedOutput,
 		CreatedAt: time.Now().UTC(),
 	}
 	check, err = s.Store.AddCheck(ctx, check)
@@ -411,6 +470,7 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	if strings.TrimSpace(summary) == "" {
 		summary = task.Title
 	}
+	summary, _ = RedactPromptSecrets(summary)
 	parents := canonicalizeParents([]Parent{{StateID: attempt.HeadStateID, Role: "run_parent", Order: 0}})
 	proposal := State{
 		ID:                newID("r"),
@@ -531,13 +591,15 @@ func (s *Service) Accept(ctx context.Context, proposalID string, checkCommand []
 		if removeErr != nil {
 			return AcceptResult{}, removeErr
 		}
+		storedCommand, _ := redactSecretStrings(checkCommand)
+		storedOutput, _ := RedactPromptSecrets(result.Output)
 		check := Check{
 			ID:        checkID,
 			AttemptID: proposal.AttemptID,
 			TreeHash:  finalTree,
-			Command:   append([]string(nil), checkCommand...),
+			Command:   storedCommand,
 			ExitCode:  result.ExitCode,
-			Output:    result.Output,
+			Output:    storedOutput,
 			CreatedAt: time.Now().UTC(),
 		}
 		if check.ExitCode != 0 {
@@ -681,6 +743,7 @@ func (s *Service) recordValidationFailure(
 		{StateID: proposal.ID, Role: "run_parent", Order: 0},
 		{StateID: current.ID, Role: "integration_parent", Order: 1},
 	})
+	storedCommand, _ := redactSecretStrings(command)
 	failed := State{
 		ID:                newID("f"),
 		Kind:              StateFailed,
@@ -689,7 +752,7 @@ func (s *Service) recordValidationFailure(
 		CanonicalAnchorID: current.ID,
 		SourceTree:        tree,
 		GitCommit:         commit,
-		Summary:           "Final validation failed: " + shellQuote(command),
+		Summary:           "Final validation failed: " + shellQuote(storedCommand),
 		Agent:             "hop",
 		CreatedAt:         time.Now().UTC(),
 		Parents:           parents,
