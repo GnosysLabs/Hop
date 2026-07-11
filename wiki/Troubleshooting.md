@@ -73,6 +73,18 @@ hop doctor --repair
 
 Do not repair while a final validation command is running.
 
+## Automatic push failed
+
+The accepted state remains safe locally. Hop never force-pushes. Retry a
+transient network or authentication failure with:
+
+```bash
+hop push
+```
+
+If the remote branch moved independently, preserve both histories and resolve
+the divergence intentionally; do not replace this with a force-push.
+
 ## A secret was pasted
 
 Rotate it. Hop redaction reduces durable exposure but cannot prove that every

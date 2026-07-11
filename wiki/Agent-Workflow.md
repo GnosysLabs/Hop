@@ -34,7 +34,9 @@ hop land R_... -- go test ./...
 ```
 
 No second landing authorization is requested unless the user explicitly asks
-for review-first behavior.
+for review-first behavior. After acceptance, Hop automatically pushes the
+accepted commit when the repository has an unambiguous upstream. The agent does
+not ask the user to run `git push`.
 
 Skill-based capture stores the agent's verbatim transcription of the visible
 message and its attachment references. Because the skill runs after the client
@@ -84,6 +86,8 @@ can only guarantee capture before project effects.
 
 - Never edit the canonical project root directly.
 - Never mutate a frozen proposal.
+- Inspect landing warnings. If automatic push failed transiently, retry once
+  with `hop push`; never force-push a diverged remote.
 - Do not bypass `hop land` with Git reset, checkout, worktree, or manual copying.
 - Run validation against immutable checkpoints and the final integrated tree.
 - Let Hop merge compatible concurrent work.

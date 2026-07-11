@@ -48,6 +48,11 @@ hop doctor
 
 A normal interactive result reports `Root: synchronized`.
 
+If the active Git branch has an upstream—or the repository has one unambiguous
+`origin`/single-remote destination—landing also fast-forward pushes the accepted
+commit automatically. Hop never force-pushes. Repositories without a remote
+remain local without treating that as an error.
+
 ## Ask for review before landing
 
 Automatic landing is the default because the original task authorizes the

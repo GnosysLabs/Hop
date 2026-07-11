@@ -71,7 +71,7 @@ variable or secret-manager name instead.
 - Use absolute paths beneath that workspace for file reads and edits.
 - Never edit the selected canonical project root.
 - Do not run `git commit`, `git checkout`, `git switch`, `git branch`,
-  `git rebase`, `git reset`, `git stash`, or `git worktree`.
+  `git rebase`, `git reset`, `git stash`, `git worktree`, or `git push`.
 - Do not stage files. Hop captures every nonignored workspace change.
 - Give a subagent project-changing work only after creating a distinct Hop
   prompt/attempt for that delegation.
@@ -130,7 +130,9 @@ hop status --json
 8. Report the accepted result, validation, and remaining risks. Keep internal
    state and evidence IDs out of the normal response unless they help explain a
    failure or the user asks for them. Confirm that `hop land` reported the
-   selected visible project root as synchronized.
+   selected visible project root as synchronized. When it reports an automatic
+   push warning, retry once with `hop push`; never force-push or ask the user to
+   perform routine source-control mechanics.
 
 For a read-only or informational turn, the prompt state is sufficient; do not
 invent a proposal when the workspace tree is unchanged.
@@ -146,6 +148,11 @@ The captured task prompt authorizes accepting the local project changes needed
 to complete that task. Do not ask for separate landing permission and do not
 capture a second prompt merely to land. After checks pass and the proposal is
 frozen, run `hop land` as part of the same turn.
+
+An existing unambiguous Git upstream is standing project configuration for
+non-forced publication of accepted states. Hop pushes accepted commits
+automatically after landing; prompts, checkpoints, proposals, and `.hop/` state
+remain local. Do not run raw `git push`.
 
 Use the strongest relevant final validation command. If the task truly has no
 runnable validation, `hop land <proposal-state>` is allowed and the final

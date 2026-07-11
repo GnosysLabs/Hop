@@ -91,6 +91,7 @@ hop check "$HOP_STATE_ID" -- <command>
 hop propose --summary "<summary>" "$HOP_STATE_ID"
 hop land <proposal-state> -- <final validation command>
 hop refresh <proposal-state>
+hop push
 ```
 
 An adapter may set `HOP_AGENT=<runtime>` or pass `--agent <runtime>`. If it has
@@ -134,6 +135,12 @@ explicit form of the same preparation step.
 `refs/hop/accepted` but intentionally leaves the visible root untouched.
 `hop sync` safely catches a stale accepted-ancestor root up to the current
 accepted state, including projects created with older Hop builds.
+
+After every successful `hop land` or `hop accept`, Hop automatically performs a
+non-forced push of the accepted commit when the active branch has an
+unambiguous upstream. No remote is a normal local-only mode. Push failure does
+not undo acceptance; `hop push` retries the current accepted commit. Agents
+must never replace a non-fast-forward rejection with a force-push.
 
 `hop begin` is the interactive-agent entry point. It initializes Hop when
 necessary and captures the current message before the agent performs project
@@ -206,6 +213,7 @@ provide the same boundary inside compatible agent clients.
   product ambiguity, not ordinary textual overlap.
 - **Visible-root conflict:** preserve the proposal and the user's files. Do not substitute controller-only `hop accept`; resolve or capture the visible changes, then land again.
 - **Controller-accepted root is stale:** run `hop sync`; it succeeds only from an accepted ancestor and never overwrites divergence.
+- **Automatic push warning:** retry once with `hop push`; preserve a diverged remote and never force-push it.
 - **Ref inconsistency:** run `hop doctor`; use `hop doctor --repair` only outside final validation.
 - **Secrets:** Hop redacts high-confidence provider keys plus contextual tokens,
   passwords, private keys, authorization headers, and credential-bearing URLs

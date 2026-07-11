@@ -25,6 +25,7 @@ Usage:
   hop land STATE [-- COMMAND [ARG...]]
   hop refresh PROPOSAL
   hop sync
+  hop push
   hop status
   hop graph
   hop state STATE
@@ -264,6 +265,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		}
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Accepted internally as %s · tree %s · visible root unchanged\n", result.State.ID, shortHash(result.State.SourceTree))
+			printRemotePush(stdout, result.RemotePush)
 			if result.Check == nil {
 				fmt.Fprintln(stdout, "No final-state validation command was supplied.")
 			}
@@ -308,6 +310,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Landed as %s · tree %s\n", result.State.ID, shortHash(result.State.SourceTree))
 			fmt.Fprintf(stdout, "Synchronized visible root: %s\n", result.MaterializedRoot)
+			printRemotePush(stdout, result.RemotePush)
 			if result.Check == nil {
 				fmt.Fprintln(stdout, "No final-state validation command was supplied.")
 			}
@@ -346,6 +349,20 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			} else {
 				fmt.Fprintf(stdout, "Visible root already matches accepted state %s\n", result.State.ID)
 			}
+		}
+
+	case "push":
+		if len(commandArgs) != 0 {
+			fmt.Fprintln(stderr, "usage: hop push")
+			return 2
+		}
+		result, err := service.Push(ctx)
+		value = result
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if !jsonOutput {
+			printRemotePush(stdout, &result)
 		}
 
 	case "status":
@@ -618,6 +635,13 @@ func printRefreshSummary(w io.Writer, result RefreshResult) {
 		fmt.Fprintf(w, "  %s\n", path)
 	}
 	fmt.Fprintf(w, "Continue automatically with: hop check %s -- <test-command>, then propose and land again.\n", result.Prompt.ID)
+}
+
+func printRemotePush(w io.Writer, result *RemotePushResult) {
+	if result == nil {
+		return
+	}
+	fmt.Fprintf(w, "Pushed accepted commit to %s/%s\n", result.Remote, strings.TrimPrefix(result.Ref, "refs/heads/"))
 }
 
 func removeFlag(args []string, wanted string) (bool, []string) {

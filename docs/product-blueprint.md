@@ -342,7 +342,8 @@ The smallest complete product is a **parallel-agent landing queue** backed by Gi
 10. Run configured checks on that exact final state.
 11. Auto-accept successful ordinary local work without another user prompt,
     then advance the accepted head atomically, export a normal Git-compatible
-    commit, and safely synchronize the visible Desktop root.
+    commit, safely synchronize the visible root, and non-force push an existing
+    unambiguous Git upstream.
 12. Undo an accepted state through a compensating prompt/integration state.
 13. Generate a small `PROJECT.md` from accepted facts.
 14. Install a vendor-neutral agent skill and expose stable JSON CLI output.
@@ -370,7 +371,9 @@ The smallest complete product is a **parallel-agent landing queue** backed by Gi
 - Deduplicate roots so a prompt that changes one file—or no files—adds only a small manifest plus new chunks rather than copying the repository.
 - Use a temporary integration worktree for final checks.
 - Emit an ordinary Git commit for each accepted source transition, with `Hop-State`, `Hop-Task`, and `Hop-Attempt` trailers.
-- Preserve metadata in a Hop receipt referenced by an internal Git ref; add remote synchronization later.
+- Preserve metadata in a Hop receipt referenced by an internal Git ref. Push
+  accepted Git commits to existing upstream branches now; distributed Hop-state
+  synchronization remains later work.
 - Shell out to the installed Git CLI before taking on the complexity of a custom Git implementation.
 - Assign each attempt isolated temp/cache paths and, where possible, a port range; filesystem isolation alone does not isolate development servers and local services.
 

@@ -1448,6 +1448,103 @@ func TestLandMaterializesVisibleRootWithoutMovingGitState(t *testing.T) {
 	}
 }
 
+func TestLandAutomaticallyPushesAcceptedCommit(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTest(t, service.Root, "init", "--quiet", "--bare", remote)
+	runGitTest(t, service.Root, "remote", "add", "origin", remote)
+	branch := runGitTest(t, service.Root, "symbolic-ref", "--short", "HEAD")
+
+	started, err := service.CreatePrompt(ctx, "Publish accepted work", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "published.txt"), "published\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Published change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Land(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RemotePush == nil {
+		t.Fatal("land did not report an automatic remote push")
+	}
+	wantRef := "refs/heads/" + branch
+	if result.RemotePush.Remote != "origin" || result.RemotePush.Ref != wantRef || result.RemotePush.Commit != result.State.GitCommit {
+		t.Fatalf("automatic push = %#v", result.RemotePush)
+	}
+	if got := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", wantRef); got != result.State.GitCommit {
+		t.Fatalf("remote branch = %s, want accepted commit %s", got, result.State.GitCommit)
+	}
+	retried, err := service.Push(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Commit != result.State.GitCommit || retried.Remote != "origin" || retried.Ref != wantRef {
+		t.Fatalf("explicit push retry = %#v", retried)
+	}
+}
+
+func TestAutomaticPushNeverForcesDivergedRemote(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTest(t, service.Root, "init", "--quiet", "--bare", remote)
+	runGitTest(t, service.Root, "remote", "add", "origin", remote)
+	branch := runGitTest(t, service.Root, "symbolic-ref", "--short", "HEAD")
+
+	first, err := service.CreatePrompt(ctx, "Publish first work", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(first.Workspace, "first.txt"), "first\n")
+	firstProposal, err := service.Propose(ctx, first.Prompt.ID, "First published change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLanded, err := service.Land(ctx, firstProposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := filepath.Join(t.TempDir(), "other")
+	runGitTest(t, service.Root, "clone", "--quiet", "--branch", branch, remote, other)
+	writeTestFile(t, filepath.Join(other, "remote.txt"), "remote\n")
+	runGitTest(t, other, "add", "remote.txt")
+	runGitTest(t, other, "-c", "user.name=Remote", "-c", "user.email=remote@example.com", "commit", "--quiet", "-m", "remote change")
+	runGitTest(t, other, "push", "--quiet", "origin", branch)
+	remoteTip := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch)
+	if remoteTip == firstLanded.State.GitCommit {
+		t.Fatal("test did not advance the remote independently")
+	}
+
+	second, err := service.CreatePrompt(ctx, "Publish local work", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(second.Workspace, "local.txt"), "local\n")
+	secondProposal, err := service.Propose(ctx, second.Prompt.ID, "Local accepted change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLanded, err := service.Land(ctx, secondProposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondLanded.RemotePush != nil {
+		t.Fatalf("diverged remote unexpectedly reported a successful push: %#v", secondLanded.RemotePush)
+	}
+	if len(secondLanded.Warnings) == 0 || !strings.Contains(strings.Join(secondLanded.Warnings, "\n"), "automatic push failed") {
+		t.Fatalf("diverged remote warnings = %#v", secondLanded.Warnings)
+	}
+	if got := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch); got != remoteTip {
+		t.Fatalf("automatic push rewrote diverged remote from %s to %s", remoteTip, got)
+	}
+}
+
 func TestLandMaterializesEmptyUnbornRootAcrossRepeatedLands(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

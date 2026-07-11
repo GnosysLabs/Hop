@@ -644,6 +644,32 @@ func (s *Service) Land(ctx context.Context, proposalID string, checkCommand []st
 	return s.accept(ctx, proposalID, checkCommand, true)
 }
 
+// Push publishes the current accepted commit to the repository's inferred
+// upstream branch. Land and Accept call the same operation automatically; this
+// explicit form is the retry/recovery surface for an agent after a warning.
+func (s *Service) Push(ctx context.Context) (RemotePushResult, error) {
+	release, err := acquireProjectLock(ctx, s.Root, "accept")
+	if err != nil {
+		return RemotePushResult{}, err
+	}
+	defer release()
+	accepted, err := s.Store.AcceptedHead(ctx)
+	if err != nil {
+		return RemotePushResult{}, err
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result, configured, err := s.Repo.PushAccepted(pushCtx, accepted.GitCommit)
+	if err != nil {
+		message, _ := RedactPromptSecrets(err.Error())
+		return RemotePushResult{}, errors.New(message)
+	}
+	if !configured {
+		return RemotePushResult{}, errors.New("hop: no unambiguous Git remote branch is configured for automatic push")
+	}
+	return result, nil
+}
+
 func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []string, materialize bool) (AcceptResult, error) {
 	release, err := acquireProjectLock(ctx, s.Root, "accept")
 	if err != nil {
@@ -668,6 +694,7 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 			}
 			result.MaterializedRoot = s.Root
 		}
+		s.attachAutomaticPush(ctx, &result)
 		return result, nil
 	}
 	attempt, err := s.Store.GetAttempt(ctx, proposal.AttemptID)
@@ -844,7 +871,22 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		}
 		result.MaterializedRoot = s.Root
 	}
+	s.attachAutomaticPush(ctx, &result)
 	return result, nil
+}
+
+func (s *Service) attachAutomaticPush(ctx context.Context, result *AcceptResult) {
+	pushCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	pushed, configured, err := s.Repo.PushAccepted(pushCtx, result.State.GitCommit)
+	if err != nil {
+		message, _ := RedactPromptSecrets(err.Error())
+		result.Warnings = append(result.Warnings, "accepted state is local, but automatic push failed: "+message)
+		return
+	}
+	if configured {
+		result.RemotePush = &pushed
+	}
 }
 
 // Sync projects the current accepted tree into a visible root that still

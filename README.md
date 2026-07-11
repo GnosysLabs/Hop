@@ -21,6 +21,8 @@ and safe multi-agent integration.
   exact final tree before it becomes accepted.
 - **Accepted work is visible.** Successful results appear in the selected
   project folder without moving your active Git branch or index.
+- **Publishing is automatic.** When an upstream branch exists, each accepted
+  transition is pushed without moving the local branch or force-pushing.
 - **History stays local by default.** Detected credentials are redacted before
   prompts and evidence are persisted.
 
@@ -68,6 +70,8 @@ verification, see the
 That is the full user workflow. You do not run `hop init`, route prompts through
 a terminal, or work inside `.hop` yourself. After a task, `hop status` shows the
 accepted state and whether the visible project folder is synchronized.
+When the repository has an unambiguous Git upstream, Hop also pushes the
+accepted commit automatically; users do not run `git push` after each task.
 
 For example, Codex Desktop users restart Codex after installation, select a Git
 project, and prompt normally. Other compatible runtimes can read the shared

@@ -3,7 +3,8 @@
 Hop is prompt-native version control for coding agents. It stores each prompt
 as an immutable project state, gives agent work an isolated workspace, validates
 the exact tree being accepted, and safely materializes accepted results into the
-visible project folder.
+visible project folder. When a Git upstream exists, accepted commits are pushed
+automatically.
 
 ## Start here
 

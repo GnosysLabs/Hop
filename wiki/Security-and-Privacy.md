@@ -46,6 +46,11 @@ Hop does not use `reset --hard`, move the active branch, or write the user's
 real Git index. Visible-root synchronization fails closed when files, ignored
 destinations, or staged state could be overwritten.
 
+Automatic push delegates authentication to the user's existing Git transport
+and credential configuration. Hop does not store remote passwords, SSH private
+keys, or access tokens. It disables terminal credential prompting in the
+background push path and redacts detected credentials from returned errors.
+
 ## Reporting a vulnerability
 
 Before the public security contact is configured, disclose vulnerabilities

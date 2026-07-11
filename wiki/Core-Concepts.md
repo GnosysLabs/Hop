@@ -59,3 +59,13 @@ The visible root is the project directory selected in an agent client or passed
 as the controller's working directory. Hop only materializes into it when it
 still matches an accepted Hop ancestor. Untracked, ignored, staged, or ordinary
 file divergence that could be overwritten causes a fail-closed error.
+
+## Automatic upstream push
+
+Every successful accepted transition is automatically pushed to the active
+branch's configured Git upstream. If no upstream is set, Hop uses `origin`, or a
+single unambiguous remote, with the active branch name. It pushes only accepted
+commits—not prompts, checkpoints, proposals, SQLite history, or workspaces—and
+never force-pushes. A network, authentication, or non-fast-forward failure
+leaves the accepted local state intact and is returned as a warning for the
+agent to handle.

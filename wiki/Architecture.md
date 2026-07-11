@@ -50,5 +50,10 @@ derived Git refs can be repaired by `hop doctor --repair`. Visible-root landing
 also tracks which accepted state is physically visible, allowing safe catch-up
 with `hop sync` without treating a divergent folder as disposable.
 
+After that local transaction succeeds, Hop attempts a non-forced push of the
+accepted commit to the inferred upstream branch. Remote publication is derived
+and retryable: its failure cannot roll back or corrupt the durable local
+acceptance.
+
 For the full product direction, read the
 [product blueprint](https://githop.xyz/GnosysLabs/Hop/src/branch/main/docs/product-blueprint.md).

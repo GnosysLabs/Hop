@@ -301,6 +301,118 @@ func (r *Repository) Head(ctx context.Context) (oid string, exists bool, err err
 	return trimLine(output), true, nil
 }
 
+// PushAccepted publishes one accepted Hop commit to the repository's existing
+// branch destination. It never force-pushes and returns configured=false when
+// the repository has no unambiguous remote branch target.
+func (r *Repository) PushAccepted(ctx context.Context, commit string) (result RemotePushResult, configured bool, err error) {
+	if err := validObjectName(commit); err != nil {
+		return result, false, fmt.Errorf("invalid accepted commit: %w", err)
+	}
+	branch, exists, err := r.optionalGitOutput(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return result, false, fmt.Errorf("discover automatic push branch: %w", err)
+	}
+	if !exists || branch == "" {
+		return result, false, nil
+	}
+	if _, err := r.run(ctx, nil, nil, "check-ref-format", "--branch", branch); err != nil {
+		return result, false, fmt.Errorf("validate automatic push branch: %w", err)
+	}
+
+	remoteNamesOutput, err := r.run(ctx, nil, nil, "remote")
+	if err != nil {
+		return result, false, fmt.Errorf("list Git remotes: %w", err)
+	}
+	remoteNames := nonemptyLines(remoteNamesOutput)
+	if len(remoteNames) == 0 {
+		return result, false, nil
+	}
+
+	upstreamRemote, hasUpstreamRemote, err := r.optionalGitOutput(ctx, "config", "--get", "branch."+branch+".remote")
+	if err != nil {
+		return result, false, fmt.Errorf("read Git upstream remote for %s: %w", branch, err)
+	}
+	remote := ""
+	for _, key := range []string{
+		"branch." + branch + ".pushRemote",
+		"remote.pushDefault",
+	} {
+		value, found, configErr := r.optionalGitOutput(ctx, "config", "--get", key)
+		if configErr != nil {
+			return result, false, fmt.Errorf("read Git config %s: %w", key, configErr)
+		}
+		if found && value != "" {
+			remote = value
+			break
+		}
+	}
+	if remote == "" && hasUpstreamRemote {
+		remote = upstreamRemote
+	}
+	if remote == "." {
+		return result, false, nil
+	}
+	if remote == "" {
+		if containsString(remoteNames, "origin") {
+			remote = "origin"
+		} else if len(remoteNames) == 1 {
+			remote = remoteNames[0]
+		} else {
+			return result, false, nil
+		}
+	}
+	if !containsString(remoteNames, remote) {
+		return result, false, fmt.Errorf("configured automatic push remote %q does not exist", remote)
+	}
+
+	ref := "refs/heads/" + branch
+	if mergeRef, found, configErr := r.optionalGitOutput(ctx, "config", "--get", "branch."+branch+".merge"); configErr != nil {
+		return result, false, fmt.Errorf("read upstream branch for %s: %w", branch, configErr)
+	} else if found && remote == upstreamRemote && strings.HasPrefix(mergeRef, "refs/heads/") {
+		ref = mergeRef
+	}
+	if err := r.validateRef(ctx, ref); err != nil {
+		return result, false, fmt.Errorf("validate automatic push destination: %w", err)
+	}
+
+	if _, err := r.run(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, nil,
+		"push", "--porcelain", remote, commit+":"+ref); err != nil {
+		return result, true, fmt.Errorf("push accepted commit to %s/%s: %w", remote, strings.TrimPrefix(ref, "refs/heads/"), err)
+	}
+	safeRemote, _ := RedactPromptSecrets(remote)
+	return RemotePushResult{Remote: safeRemote, Ref: ref, Commit: commit}, true, nil
+}
+
+func (r *Repository) optionalGitOutput(ctx context.Context, args ...string) (string, bool, error) {
+	output, err := r.run(ctx, nil, nil, args...)
+	if err != nil {
+		if gitExitCode(err) == 1 {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return trimLine(output), true, nil
+}
+
+func nonemptyLines(value string) []string {
+	var lines []string
+	for _, line := range strings.Split(value, "\n") {
+		if line = strings.TrimSpace(strings.TrimSuffix(line, "\r")); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 // Snapshot records all tracked files and all non-ignored untracked files in the
 // worktree. It uses a disposable index, preserving both the contents and staging
 // state of the user's real index. The synthetic commit is parented to HEAD when
