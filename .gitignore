@@ -1,7 +1,11 @@
 .DS_Store
 
 # Hop's local state and isolated workspaces.
-/.hop/
+# Hop's database and disposable workspaces stay local. Its immutable prompt
+# records are intentionally versioned with the repository.
+/.hop/*
+!/.hop/records/
+!/.hop/records/**
 
 # Local build and verification artifacts.
 /hop

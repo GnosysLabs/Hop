@@ -1,0 +1,16 @@
+{
+  "id": "P_06FN6TJER8F0XAZ16WC67T8",
+  "task_id": "T_06FN4XGE85PT4JGG4GNJKY8",
+  "attempt_id": "AT_06FN4XGE86NQVTBQXKHZST8",
+  "state_id": "P_06FN6TJER8F0XAZ16WC67T8",
+  "prompt": "Use token=[REDACTED:access_token]",
+  "agent_name": "codex",
+  "status": "active",
+  "created_at": "2026-07-11T23:01:43.746919Z",
+  "metadata": {
+    "source_tree": "22e1b6bfde927afbe0622a552cfe6703fed85f3f",
+    "git_commit": "2f280216bce70bd9c0cde260fb3d13bbf9873c2b",
+    "attempt_head": "P_06FN6WCW4AKSXGC9F327V5R",
+    "attempt_head_kind": "prompt"
+  }
+}

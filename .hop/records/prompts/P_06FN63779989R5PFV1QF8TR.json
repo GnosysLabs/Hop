@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN63779989R5PFV1QF8TR",
+  "task_id": "T_06FN637799RW5Q7WH9H6PJR",
+  "attempt_id": "AT_06FN63779BJRBK1VFQ94GRR",
+  "state_id": "P_06FN63779989R5PFV1QF8TR",
+  "prompt": "does our installer install the skill in .agents so it works with any agent? and, why is the readme so specific to codex? it should work with any agent",
+  "agent_name": "codex",
+  "status": "accepted",
+  "response_summary": "Install portable agent-neutral Hop skill and documentation",
+  "created_at": "2026-07-11T21:19:42.41027Z",
+  "metadata": {
+    "source_tree": "fcc3f3c78f5bbf6fae43651a99019e833bd88530",
+    "git_commit": "2f00b2dd3f8bc5e4c261563a9ac063d1716f0d47",
+    "attempt_head": "R_06FN69VET1STZNKPWK913K8",
+    "attempt_head_kind": "proposal"
+  }
+}

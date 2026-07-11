@@ -1,0 +1,16 @@
+{
+  "id": "P_06FN54TQ8JER4MHPVZ54R38",
+  "task_id": "T_06FN5359KS5X1TYTM04TBM8",
+  "attempt_id": "AT_06FN5359KTD6D97MR8B1H20",
+  "state_id": "P_06FN54TQ8JER4MHPVZ54R38",
+  "prompt": "Quick read-only follow-up: inspect the newly added scripts/test-install.ps1 and the updated PowerShell CI/install script for obvious PowerShell syntax or scoping bugs. Return only concrete issues.",
+  "agent_name": "codex",
+  "status": "active",
+  "created_at": "2026-07-11T19:06:55.684122Z",
+  "metadata": {
+    "source_tree": "eaf6b0c7a79119b4f136a956e0a52b75fd2fee47",
+    "git_commit": "f77858863e7488356a0816f0495f8ad260d6c016",
+    "attempt_head": "P_06FN54TQ8JER4MHPVZ54R38",
+    "attempt_head_kind": "prompt"
+  }
+}

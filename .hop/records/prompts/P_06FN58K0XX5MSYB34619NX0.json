@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN58K0XX5MSYB34619NX0",
+  "task_id": "T_06FN3MBF98GWD4NA5PA1RWG",
+  "attempt_id": "AT_06FN3MBF98FBDSE1BZDP5DG",
+  "state_id": "P_06FN58K0XX5MSYB34619NX0",
+  "prompt": "i turned off the proxy? does that make it work",
+  "agent_name": "codex",
+  "status": "completed",
+  "response_summary": "Roll completed agent sessions onto the latest accepted state",
+  "created_at": "2026-07-11T19:23:21.19964Z",
+  "metadata": {
+    "source_tree": "a91a4bd37315fa30673005970ce750755e9582be",
+    "git_commit": "ad1055c4f4e79f0a0efa9e39c2d6dd8ca5c1b219",
+    "attempt_head": "R_06FN5TJRZC3APECRM9VM2A8",
+    "attempt_head_kind": "proposal"
+  }
+}

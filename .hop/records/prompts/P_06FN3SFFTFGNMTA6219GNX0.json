@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN3SFFTFGNMTA6219GNX0",
+  "task_id": "T_06FN3MBF98GWD4NA5PA1RWG",
+  "attempt_id": "AT_06FN3MBF98FBDSE1BZDP5DG",
+  "state_id": "P_06FN3SFFTFGNMTA6219GNX0",
+  "prompt": "Hop currently treats the selected folder as a controller/canonical-state anchor:\nhop begin creates an isolated workspace under .hop/workspaces/.\nThe agent edits and tests there.\nhop propose freezes that workspace.\nhop accept advances Hop’s internal accepted Git tree.\nBut it does not check that accepted tree out into the visible project root.\nSo the work is stored and accepted, but the folder you selected still appears empty. Codex also hides .hop, making this especially confusing.\nFor desktop use, I think the correct behavior is:\nAgents continue working in isolated Hop workspaces.\nAcceptance updates Hop’s internal state.\nHop then safely materializes the accepted tree into /Users/christopher/Dev/HopWeb.\nIf that visible folder contains uncommitted user changes, Hop blocks synchronization instead of overwriting them.\nThat gives isolation during work while ensuring the selected project folder always displays the accepted result. The current behavior is effectively “bare controller mode,” and it’s wrong for the UX you expected.",
+  "agent_name": "codex",
+  "status": "completed",
+  "response_summary": "Roll completed agent sessions onto the latest accepted state",
+  "created_at": "2026-07-11T15:57:31.475378Z",
+  "metadata": {
+    "source_tree": "012d4872472b5c8621c6ef3cedd50509e09e7aa6",
+    "git_commit": "b4cd1bf2d268f5a497f7071c75e9215e0d717a80",
+    "attempt_head": "R_06FN5TJRZC3APECRM9VM2A8",
+    "attempt_head_kind": "proposal"
+  }
+}

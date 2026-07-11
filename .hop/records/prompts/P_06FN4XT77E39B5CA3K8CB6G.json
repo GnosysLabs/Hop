@@ -1,0 +1,16 @@
+{
+  "id": "P_06FN4XT77E39B5CA3K8CB6G",
+  "task_id": "T_06FN4XT77CWJNVK2N0YA8G8",
+  "attempt_id": "AT_06FN4XT77D7CPNVR879N9SG",
+  "state_id": "P_06FN4XT77E39B5CA3K8CB6G",
+  "prompt": "In reconciliation workspace /Users/christopher/Dev/Hop/.hop/workspaces/AT_06FN4XMZP6EPRVNAAQWA8K8, resolve ALL conflict markers in internal/hop/service.go by taking the proposal-side content (commit 0eda6486831add8cb748a6933d348c396f117698) for each conflict. Proposal is the intended alpha4 superset. Use apply_patch only; do not git checkout/restore. Verify no markers in that file. Edit only service.go.",
+  "agent_name": "codex",
+  "status": "active",
+  "created_at": "2026-07-11T18:36:16.571599Z",
+  "metadata": {
+    "source_tree": "22e1b6bfde927afbe0622a552cfe6703fed85f3f",
+    "git_commit": "4c0c504935e689d91d7c0d7173e89b6a96cc68ab",
+    "attempt_head": "P_06FN4XT77E39B5CA3K8CB6G",
+    "attempt_head_kind": "prompt"
+  }
+}

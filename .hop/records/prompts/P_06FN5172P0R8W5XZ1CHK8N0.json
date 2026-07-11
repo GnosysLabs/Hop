@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN5172P0R8W5XZ1CHK8N0",
+  "task_id": "T_06FN3MBF98GWD4NA5PA1RWG",
+  "attempt_id": "AT_06FN3MBF98FBDSE1BZDP5DG",
+  "state_id": "P_06FN5172P0R8W5XZ1CHK8N0",
+  "prompt": "i wont be hosting this on github, ill be hosting it on githop.xyz which is a custom gitea. the site isnt live yet but its done",
+  "agent_name": "codex",
+  "status": "completed",
+  "response_summary": "Roll completed agent sessions onto the latest accepted state",
+  "created_at": "2026-07-11T18:51:08.33613Z",
+  "metadata": {
+    "source_tree": "7879aa3466a9b33dcebbe8c1c9873334976577e5",
+    "git_commit": "f434be463cc2940449970408924e653161dc9ac8",
+    "attempt_head": "R_06FN5TJRZC3APECRM9VM2A8",
+    "attempt_head_kind": "proposal"
+  }
+}

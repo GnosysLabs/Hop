@@ -1,0 +1,16 @@
+{
+  "id": "P_06FN5Q9YHF9V1FVCSYV0MF8",
+  "task_id": "T_06FN5M9MCC8VZYTY2YEM31G",
+  "attempt_id": "AT_06FN5M9MCEC70H6A21JRCW8",
+  "state_id": "P_06FN5Q9YHF9V1FVCSYV0MF8",
+  "prompt": "Read-only review of current implementation and regression test in /Users/christopher/Dev/Hop/.hop/workspaces/AT_06FN3MBF98FBDSE1BZDP5DG. Look for missing assertions, false positives, or a case where same-session begin still reopens stale accepted work. No edits.",
+  "agent_name": "codex",
+  "status": "active",
+  "created_at": "2026-07-11T20:27:39.019931Z",
+  "metadata": {
+    "source_tree": "2c8e849cbf49c422470f5857fda59a1aaf9ac2eb",
+    "git_commit": "3173ea2b00ac67a5fa37ecd9cd86ddc1bb7828b5",
+    "attempt_head": "P_06FN63DAM7CV4GWJMP84GK8",
+    "attempt_head_kind": "prompt"
+  }
+}

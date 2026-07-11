@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN3MBF9ABQ6NTST1B7GZ0",
+  "task_id": "T_06FN3MBF98GWD4NA5PA1RWG",
+  "attempt_id": "AT_06FN3MBF98FBDSE1BZDP5DG",
+  "state_id": "P_06FN3MBF9ABQ6NTST1B7GZ0",
+  "prompt": "what? wtf? i need it in the right folder how do i do that",
+  "agent_name": "codex",
+  "status": "completed",
+  "response_summary": "Roll completed agent sessions onto the latest accepted state",
+  "created_at": "2026-07-11T15:35:07.850559Z",
+  "metadata": {
+    "source_tree": "012d4872472b5c8621c6ef3cedd50509e09e7aa6",
+    "git_commit": "a70773826f67e30e57b7c0a0419e3b601674632f",
+    "attempt_head": "R_06FN5TJRZC3APECRM9VM2A8",
+    "attempt_head_kind": "proposal"
+  }
+}

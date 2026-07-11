@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN6JQ4DBZHXABYYCA61E8",
+  "task_id": "T_06FN6GZKFMRV2HP5N7XMNSR",
+  "attempt_id": "AT_06FN6GZKFP22ZCFRXGB7V00",
+  "state_id": "P_06FN6JQ4DBZHXABYYCA61E8",
+  "prompt": "why is it creating tokens? is there something in hop encouraging that behavior? i dont like that",
+  "agent_name": "codex",
+  "status": "accepted",
+  "response_summary": "Require user-provisioned release credentials",
+  "created_at": "2026-07-11T22:27:24.906795Z",
+  "metadata": {
+    "source_tree": "3b5d48444b5e5290839774d383a7498d0190e708",
+    "git_commit": "531775df8be5e87e57832473fc6a7ad8342b9b91",
+    "attempt_head": "R_06FN6KJWAY5XWVMCVQHCXKR",
+    "attempt_head_kind": "proposal"
+  }
+}

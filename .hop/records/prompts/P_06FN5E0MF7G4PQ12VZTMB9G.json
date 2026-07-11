@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN5E0MF7G4PQ12VZTMB9G",
+  "task_id": "T_06FN3MBF98GWD4NA5PA1RWG",
+  "attempt_id": "AT_06FN3MBF98FBDSE1BZDP5DG",
+  "state_id": "P_06FN5E0MF7G4PQ12VZTMB9G",
+  "prompt": "idk what this is, im going to disable the actions thing on our instance we dont have the server resources for i\n\nAttachment: /var/folders/58/b6yn15tx3jb7_6lw9m67f89m0000gn/T/TemporaryItems/NSIRD_screencaptureui_4Rixx8/Screenshot 2026-07-11 at 12.45.33 PM.png",
+  "agent_name": "codex",
+  "status": "completed",
+  "response_summary": "Roll completed agent sessions onto the latest accepted state",
+  "created_at": "2026-07-11T19:47:03.417913Z",
+  "metadata": {
+    "source_tree": "52869fbc4277ef5d2db2794c6d7867d6c23c423c",
+    "git_commit": "c77bf19172e2fed26b577183282c27ce341c80d4",
+    "attempt_head": "R_06FN5TJRZC3APECRM9VM2A8",
+    "attempt_head_kind": "proposal"
+  }
+}

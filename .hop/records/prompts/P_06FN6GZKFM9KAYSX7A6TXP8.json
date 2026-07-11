@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN6GZKFM9KAYSX7A6TXP8",
+  "task_id": "T_06FN6GZKFMRV2HP5N7XMNSR",
+  "attempt_id": "AT_06FN6GZKFP22ZCFRXGB7V00",
+  "state_id": "P_06FN6GZKFM9KAYSX7A6TXP8",
+  "prompt": "lets finish what we were doing then investigate that, i have added the key to the keychain",
+  "agent_name": "codex",
+  "status": "accepted",
+  "response_summary": "Require user-provisioned release credentials",
+  "created_at": "2026-07-11T22:19:50.013492Z",
+  "metadata": {
+    "source_tree": "3b5d48444b5e5290839774d383a7498d0190e708",
+    "git_commit": "7139b9e1a7e52e8748c130dc366472c9f10cb04e",
+    "attempt_head": "R_06FN6KJWAY5XWVMCVQHCXKR",
+    "attempt_head_kind": "proposal"
+  }
+}

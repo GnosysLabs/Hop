@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN58Y686QH957QKXDC820",
+  "task_id": "T_06FN3MBF98GWD4NA5PA1RWG",
+  "attempt_id": "AT_06FN3MBF98FBDSE1BZDP5DG",
+  "state_id": "P_06FN58Y686QH957QKXDC820",
+  "prompt": "why would you have to put port 22? thats not how it works with github. wtf?",
+  "agent_name": "codex",
+  "status": "completed",
+  "response_summary": "Roll completed agent sessions onto the latest accepted state",
+  "created_at": "2026-07-11T19:24:52.673537Z",
+  "metadata": {
+    "source_tree": "a91a4bd37315fa30673005970ce750755e9582be",
+    "git_commit": "092fec93f02614e919b8a75392044f86703d2293",
+    "attempt_head": "R_06FN5TJRZC3APECRM9VM2A8",
+    "attempt_head_kind": "proposal"
+  }
+}

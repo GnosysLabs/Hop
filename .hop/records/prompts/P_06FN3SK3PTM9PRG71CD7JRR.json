@@ -1,0 +1,16 @@
+{
+  "id": "P_06FN3SK3PTM9PRG71CD7JRR",
+  "task_id": "T_06FN3SK3PSY0VR1Z2CGE5HR",
+  "attempt_id": "AT_06FN3SK3PS100FAGQCVCFM8",
+  "state_id": "P_06FN3SK3PTM9PRG71CD7JRR",
+  "prompt": "Read-only inspect /Users/christopher/Dev/Hop tests and implementation. Produce a concrete test matrix for canonical-root materialization after land: empty root, clean tracked tree, staged/unstaged edits, untracked conflicts/nonconflicts, ignored files, deletion/mode/symlink, validation failure, unborn repo. Identify current helpers to reuse. Do not edit.",
+  "agent_name": "codex",
+  "status": "active",
+  "created_at": "2026-07-11T15:58:01.142266Z",
+  "metadata": {
+    "source_tree": "012d4872472b5c8621c6ef3cedd50509e09e7aa6",
+    "git_commit": "a70773826f67e30e57b7c0a0419e3b601674632f",
+    "attempt_head": "P_06FN3SK3PTM9PRG71CD7JRR",
+    "attempt_head_kind": "prompt"
+  }
+}
