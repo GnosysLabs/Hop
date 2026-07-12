@@ -1640,17 +1640,17 @@ func (s *Service) reconcileDerivedRefs(ctx context.Context, reconcileAccepted bo
 	if err != nil {
 		return err
 	}
+	refs, err := s.Repo.ListHiddenRefs(ctx)
+	if err != nil {
+		return err
+	}
 	for _, row := range rows {
 		state := row.State
-		if err := s.Repo.VerifyObjects(ctx, state.GitCommit, state.SourceTree); err != nil {
-			return fmt.Errorf("state %s references unavailable Git data: %w", state.ID, err)
-		}
 		name := "states/" + state.ID
-		commit, exists, err := s.Repo.ReadHiddenRef(ctx, name)
-		if err != nil {
-			return err
-		}
-		if !exists || commit != state.GitCommit {
+		if refs[name] != state.GitCommit {
+			if err := s.Repo.VerifyObjects(ctx, state.GitCommit, state.SourceTree); err != nil {
+				return fmt.Errorf("state %s references unavailable Git data: %w", state.ID, err)
+			}
 			if err := s.Repo.UpdateHiddenRef(ctx, name, state.GitCommit); err != nil {
 				return fmt.Errorf("repair Git pin for state %s: %w", state.ID, err)
 			}
@@ -1668,11 +1668,7 @@ func (s *Service) reconcileDerivedRefs(ctx context.Context, reconcileAccepted bo
 	if err != nil {
 		return err
 	}
-	commit, exists, err := s.Repo.ReadHiddenRef(ctx, acceptedRef)
-	if err != nil {
-		return err
-	}
-	if !exists || commit != head.GitCommit {
+	if refs[acceptedRef] != head.GitCommit {
 		if err := s.Repo.UpdateHiddenRef(ctx, acceptedRef, head.GitCommit); err != nil {
 			return fmt.Errorf("repair accepted Git ref: %w", err)
 		}

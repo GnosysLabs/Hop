@@ -58,8 +58,13 @@ uses it as the default session and identifies the runtime as `codex` unless
   headers, and credential-bearing connection strings before persistence.
 
 Read the returned `HOP_STATE_ID`, `HOP_TASK_ID`, `HOP_ATTEMPT_ID`, and workspace.
-If capture fails or `hop` is unavailable, stop without project effects and
-report the error.
+Allow at least 120 seconds for capture. If it times out or fails transiently,
+retry once with the same message, agent, and session; Hop session binding makes
+the retry idempotent for the task. If the retry fails, inspect Hop's error and
+locks, run `hop doctor`, and repair a safe local operational problem when
+possible. Stop without project effects only when Hop remains unavailable or
+unsafe after recovery; do not abandon the user's request after the first
+timeout.
 
 If Hop reports redactions, never repeat the credential in output, summaries,
 commands recorded as evidence, or proposal text. Refer to its environment

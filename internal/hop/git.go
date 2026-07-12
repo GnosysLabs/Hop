@@ -655,6 +655,27 @@ func (r *Repository) ReadHiddenRef(ctx context.Context, name string) (oid string
 	return r.ReadRef(ctx, ref)
 }
 
+// ListHiddenRefs reads all refs below refs/hop in one Git process. Keys are
+// relative to refs/hop/ (for example, "states/P_..." or "accepted").
+func (r *Repository) ListHiddenRefs(ctx context.Context) (map[string]string, error) {
+	output, err := r.run(ctx, nil, nil, "for-each-ref", "--format=%(refname) %(objectname)", hiddenRefPrefix)
+	if err != nil {
+		return nil, err
+	}
+	refs := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		name, oid, found := strings.Cut(line, " ")
+		if !found || !strings.HasPrefix(name, hiddenRefPrefix) {
+			return nil, fmt.Errorf("unexpected hidden ref listing %q", line)
+		}
+		refs[strings.TrimPrefix(name, hiddenRefPrefix)] = strings.TrimSpace(oid)
+	}
+	return refs, nil
+}
+
 // UpdateHiddenRef atomically updates refs/hop/name. With no expectedOld value,
 // it is unconditional. Passing expectedOld performs compare-and-swap; an empty
 // expected value means the ref must not exist.
