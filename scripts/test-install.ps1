@@ -77,13 +77,18 @@ try {
 
     $sharedBundle = Join-Path $testHome ".agents\skills\hop"
     $codexBundle = Join-Path $testCodexHome "skills\hop"
+    $claudeBundle = Join-Path $testHome ".claude\skills\hop"
     $sharedSkill = Join-Path $sharedBundle "SKILL.md"
     $codexSkill = Join-Path $codexBundle "SKILL.md"
+    $claudeSkill = Join-Path $claudeBundle "SKILL.md"
     if (-not (Test-Path -LiteralPath $sharedSkill -PathType Leaf) -or (Get-Item -LiteralPath $sharedSkill).Length -eq 0) {
         throw "Installer did not install the shared Hop skill"
     }
     if (-not (Test-Path -LiteralPath $codexSkill -PathType Leaf) -or (Get-Item -LiteralPath $codexSkill).Length -eq 0) {
         throw "Installer did not install the Codex Hop skill"
+    }
+    if (-not (Test-Path -LiteralPath $claudeSkill -PathType Leaf) -or (Get-Item -LiteralPath $claudeSkill).Length -eq 0) {
+        throw "Installer did not install the Claude Code Hop skill"
     }
 
     function Get-BundleHashes {
@@ -101,14 +106,19 @@ try {
 
     $sharedHashes = Get-BundleHashes $sharedBundle
     $codexHashes = Get-BundleHashes $codexBundle
+    $claudeHashes = Get-BundleHashes $claudeBundle
     $sharedFiles = @($sharedHashes.Keys | Sort-Object)
     $codexFiles = @($codexHashes.Keys | Sort-Object)
-    if ($sharedFiles.Count -eq 0 -or (Compare-Object -ReferenceObject $sharedFiles -DifferenceObject $codexFiles)) {
-        throw "Shared and Codex Hop skill bundles contain different files"
+    $claudeFiles = @($claudeHashes.Keys | Sort-Object)
+    if ($sharedFiles.Count -eq 0 -or
+        (Compare-Object -ReferenceObject $sharedFiles -DifferenceObject $codexFiles) -or
+        (Compare-Object -ReferenceObject $sharedFiles -DifferenceObject $claudeFiles)) {
+        throw "Installed Hop skill bundles contain different files"
     }
     foreach ($relative in $sharedFiles) {
-        if ($sharedHashes[$relative] -ne $codexHashes[$relative]) {
-            throw "Shared and Codex Hop skill bundles differ at $relative"
+        if ($sharedHashes[$relative] -ne $codexHashes[$relative] -or
+            $sharedHashes[$relative] -ne $claudeHashes[$relative]) {
+            throw "Installed Hop skill bundles differ at $relative"
         }
     }
 

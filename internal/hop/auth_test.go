@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -227,6 +228,78 @@ func TestAuthStatusUsesGiteaOAuthToken(t *testing.T) {
 	}
 	if result.Login != "bob" {
 		t.Fatalf("status = %#v", result)
+	}
+}
+
+func TestOAuthGrantCreatesRepositoriesAndRunsForgeAPIOperations(t *testing.T) {
+	credentials := newMemoryCredentialStore()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer oauth-access" {
+			t.Errorf("Authorization = %q", request.Header.Get("Authorization"))
+		}
+		switch request.URL.Path {
+		case "/api/v1/user":
+			_, _ = fmt.Fprint(w, `{"id":9,"login":"alice"}`)
+		case "/api/v1/user/repos":
+			var payload struct {
+				Name    string `json:"name"`
+				Private bool   `json:"private"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if request.Method != http.MethodPost || payload.Name != "listenly" || !payload.Private {
+				t.Errorf("repository request method=%s payload=%#v", request.Method, payload)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprintf(w, `{"name":"listenly","full_name":"alice/listenly","private":true,"html_url":"%s/alice/listenly","clone_url":"%s/alice/listenly.git","ssh_url":"git@example:alice/listenly.git"}`, server.URL, server.URL)
+		case "/api/v1/repos/alice/listenly/issues/1":
+			if request.Method != http.MethodPatch || request.URL.Query().Get("notify") != "false" {
+				t.Errorf("forge API request = %s %s", request.Method, request.URL.String())
+			}
+			body, _ := io.ReadAll(request.Body)
+			if string(body) != `{"state":"closed"}` {
+				t.Errorf("forge API body = %s", body)
+			}
+			_, _ = fmt.Fprint(w, `{"state":"closed"}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	auth := &AuthClient{
+		HTTP:        server.Client(),
+		Credentials: credentials,
+		ProfilePath: filepath.Join(t.TempDir(), "auth.json"),
+	}
+	if err := auth.writeProfile(authProfile{Version: authProfileVersion, Server: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.storeCredential(server.URL, hopCredential{
+		OAuthAccessToken: "oauth-access", OAuthRefreshToken: "oauth-refresh",
+		OAuthExpiresAt: time.Now().Add(time.Hour), OAuthLogin: "alice", OAuthScope: "all",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := auth.CreateRepository(context.Background(), "alice", "listenly", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository.FullName != "alice/listenly" || !repository.Private {
+		t.Fatalf("repository = %#v", repository)
+	}
+	response, err := auth.ForgeAPI(context.Background(), http.MethodPatch, "/api/v1/repos/alice/listenly/issues/1?notify=false", []byte(`{"state":"closed"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(response), `"closed"`) {
+		t.Fatalf("forge API response = %s", response)
+	}
+	for _, unsafe := range []string{"https://evil.example/api/v1/user", "/not-api/user", "//evil.example/api/v1/user"} {
+		if _, err := auth.ForgeAPI(context.Background(), http.MethodGet, unsafe, nil); err == nil {
+			t.Errorf("ForgeAPI accepted unsafe path %q", unsafe)
+		}
 	}
 }
 

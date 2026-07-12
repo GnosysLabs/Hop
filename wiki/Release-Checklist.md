@@ -12,11 +12,10 @@ The canonical repository is `githop.xyz/GnosysLabs/Hop`.
 - Configure `origin` as `https://githop.xyz/GnosysLabs/Hop.git`.
 - Keep Gitea Actions disabled when the instance does not have dedicated runner
   capacity; Hop's release process does not depend on it.
-- Provision a narrowly scoped maintainer access token outside the agent session
-  and store it in the operating system's secret store. Agents and release
-  scripts may use that existing credential, but must never create, rotate, list,
-  or revoke account tokens through Gitea's website or API. Export it as
-  `GITEA_TOKEN` only for the local publish command, then unset it.
+- Sign in with `hop auth login https://githop.xyz`. The local release script
+  passes that existing OAuth grant to GoReleaser through `hop auth exec` without
+  exposing it in argv. Agents and release scripts must never create, rotate,
+  list, or revoke account tokens through Gitea's website or API.
 - When upgrading GoReleaser, update its pinned version and four archive
   checksums in `scripts/release-local.sh` from the official checksum file.
 - Permit release attachment MIME types for `.tar.gz`, `.zip`, and `.txt` in
@@ -43,7 +42,7 @@ scripts/release-local.sh --snapshot
 
 Inspect `dist/` and test at least one archive on each operating system family.
 Confirm `hop version` reports the snapshot/tag-injected version and
-`hop skill install --force` installs identical Hop-managed files at both
+`hop skill install --force` installs identical Hop-managed files at all three
 default skill destinations while preserving unrelated user files.
 
 ## Create a release
@@ -53,16 +52,14 @@ default skill destinations while preserving unrelated user files.
 2. Run `scripts/release-local.sh --snapshot` and inspect the artifacts.
 3. Create and verify a signed semantic-version tag such as `v1.0.0`, then
    publish it without force using `hop push-tag v1.0.0`.
-4. Read a pre-provisioned, locally stored scoped token into `GITEA_TOKEN`.
-   Do not generate a task-specific token from an agent session.
-5. Run `scripts/release-local.sh --publish`. It reruns race tests, vet, installer
+4. Run `scripts/release-local.sh --publish`. It uses the existing Hop OAuth
+   login, reruns race tests, vet, installer
    checks, builds six platform archives, generates `checksums.txt`, and uploads
    a draft without executing build work on the Gitea server.
-6. Immediately run `unset GITEA_TOKEN`.
-7. Download the draft assets and independently verify checksums, version output,
+5. Download the draft assets and independently verify checksums, version output,
    skill installation, and a disposable Hop project.
-8. Publish the Gitea draft only after those checks pass.
-9. Test both one-command installers against the now-published release.
+6. Publish the Gitea draft only after those checks pass.
+7. Test both one-command installers against the now-published release.
 
 ## Expected assets
 

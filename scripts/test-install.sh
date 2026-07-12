@@ -80,6 +80,7 @@ version=$($tmp_dir/home/bin/hop version)
 }
 shared_bundle="$tmp_dir/home/.agents/skills/hop"
 codex_bundle="$tmp_dir/home/.codex/skills/hop"
+claude_bundle="$tmp_dir/home/.claude/skills/hop"
 [ -s "$shared_bundle/SKILL.md" ] || {
   printf 'installer did not install the shared Hop skill\n' >&2
   exit 1
@@ -88,7 +89,12 @@ codex_bundle="$tmp_dir/home/.codex/skills/hop"
   printf 'installer did not install the Codex Hop skill\n' >&2
   exit 1
 }
-if ! diff -r "$shared_bundle" "$codex_bundle" >/dev/null; then
-  printf 'shared and Codex Hop skill bundles differ\n' >&2
+[ -s "$claude_bundle/SKILL.md" ] || {
+  printf 'installer did not install the Claude Code Hop skill\n' >&2
+  exit 1
+}
+if ! diff -r "$shared_bundle" "$codex_bundle" >/dev/null ||
+   ! diff -r "$shared_bundle" "$claude_bundle" >/dev/null; then
+  printf 'installed Hop skill bundles differ\n' >&2
   exit 1
 fi

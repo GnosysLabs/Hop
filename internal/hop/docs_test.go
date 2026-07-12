@@ -84,14 +84,14 @@ func TestDistributionDoesNotRequireGiteaActions(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowRequiresPreProvisionedCredential(t *testing.T) {
+func TestReleaseWorkflowUsesExistingHopOAuthCredential(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	script, err := os.ReadFile(filepath.Join(root, "scripts", "release-local.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(script), "pre-existing scoped GITEA_TOKEN") {
-		t.Fatal("release script does not require a pre-provisioned credential")
+	if !strings.Contains(string(script), "hop auth exec --env GITEA_TOKEN") {
+		t.Fatal("release script does not use the existing Hop OAuth grant")
 	}
 	if strings.Contains(string(script), "/tokens") {
 		t.Fatal("release script must not manage provider tokens")
@@ -100,8 +100,8 @@ func TestReleaseWorkflowRequiresPreProvisionedCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(checklist), "must never create, rotate, list,") ||
-		!strings.Contains(string(checklist), "or revoke account tokens") {
+	normalizedChecklist := strings.Join(strings.Fields(string(checklist)), " ")
+	if !strings.Contains(normalizedChecklist, "must never create, rotate, list, or revoke account tokens") {
 		t.Fatal("release checklist does not forbid agent token management")
 	}
 }
@@ -117,10 +117,11 @@ func TestAgentSkillUsesHopOAuthForGithop(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(contents)
+		normalized := strings.Join(strings.Fields(text), " ")
 		if !strings.Contains(text, "hop auth login https://githop.xyz") {
 			t.Errorf("%s does not direct agents to the intended githop.xyz OAuth login", relative)
 		}
-		if !strings.Contains(text, "private repositories") {
+		if !strings.Contains(normalized, "private repositories") {
 			t.Errorf("%s does not explain that OAuth covers public and private repositories", relative)
 		}
 	}

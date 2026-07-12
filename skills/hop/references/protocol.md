@@ -166,19 +166,26 @@ publishing work.
 
 For a repository hosted on `githop.xyz`, run `hop auth status` and use
 `hop auth login https://githop.xyz` when authentication is absent, expired, or
-revoked. This device-global OAuth grant is the intended credential for prompt
-sync and Hop-managed Git fetch, push, tag, and release operations against both
-public and private repositories on that forge. Hop stores the grant in the OS
-keychain, refreshes it automatically, and applies HTTPS OAuth per operation
-without persistently changing an SSH-form or HTTPS remote.
+revoked. When status succeeds, do not open a separate Gitea login page. This
+device-global OAuth grant is the intended credential for all in-scope work on
+the matching forge: prompt sync; Git fetch, push, and tags; repository creation;
+issues, comments, pull requests, releases, and other API operations against
+public and private repositories. Hop stores the grant in the OS keychain and
+refreshes it automatically.
+
+Use typed commands such as `hop repo create --private OWNER/REPOSITORY` first,
+`hop forge api` for other same-forge Gitea API operations, and `hop auth exec`
+when an established child tool requires the OAuth token in an environment
+variable. Never print or persist that variable. Hop applies HTTPS OAuth per Git
+operation without changing an SSH-form or HTTPS remote unless the user
+explicitly asks to change the publishing destination.
 
 Do not request or create a personal access token, place a token in a URL or Git
-configuration, rewrite the user's remote, or substitute a server-wide
-credential for a private repository. For another forge, a release or publishing
-task may use only a pre-existing credential the user deliberately provisioned
-through an OS secret store or the runtime's secret mechanism. When that
-credential is absent or invalid, stop and ask the user to replace it; never mint
-a task-named token.
+configuration, or substitute a server-wide credential for a private repository.
+For another forge, a release or publishing task may use only a pre-existing
+credential the user deliberately provisioned through an OS secret store or the
+runtime's secret mechanism. When that credential is absent or invalid, stop and
+ask the user to replace it; never mint a task-named token.
 
 ## Exit codes
 

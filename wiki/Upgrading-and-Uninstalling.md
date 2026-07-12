@@ -2,7 +2,7 @@
 
 ## Upgrade packaged installations
 
-Rerun the installer. It replaces the binary and refreshes both default skill
+Rerun the installer. It replaces the binary and refreshes all default skill
 bundles:
 
 ```bash
@@ -55,6 +55,7 @@ Unix default:
 rm -f "$HOME/.local/bin/hop"
 rm -rf "$HOME/.agents/skills/hop"
 rm -rf "${CODEX_HOME:-$HOME/.codex}/skills/hop"
+rm -rf "$HOME/.claude/skills/hop"
 ```
 
 Windows PowerShell:
@@ -63,6 +64,7 @@ Windows PowerShell:
 Remove-Item -Force "$env:LOCALAPPDATA\Programs\Hop\hop.exe"
 Remove-Item -Recurse -Force "$HOME\.agents\skills\hop"
 Remove-Item -Recurse -Force "$HOME\.codex\skills\hop"
+Remove-Item -Recurse -Force "$HOME\.claude\skills\hop"
 ```
 
 If `CODEX_HOME` points somewhere else, remove its `skills\hop` directory instead

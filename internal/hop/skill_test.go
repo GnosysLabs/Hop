@@ -63,7 +63,7 @@ func TestInstallSkillBundle(t *testing.T) {
 	}
 }
 
-func TestInstallDefaultSkillsWritesSharedAndCodexBundles(t *testing.T) {
+func TestInstallDefaultSkillsWritesSharedCodexAndClaudeBundles(t *testing.T) {
 	home := t.TempDir()
 	codexHome := filepath.Join(home, "codex-home")
 	t.Setenv("HOME", home)
@@ -76,10 +76,11 @@ func TestInstallDefaultSkillsWritesSharedAndCodexBundles(t *testing.T) {
 	}
 	codexTarget := filepath.Join(codexHome, "skills", "hop")
 	sharedTarget := filepath.Join(home, ".agents", "skills", "hop")
+	claudeTarget := filepath.Join(home, ".claude", "skills", "hop")
 	if result.Path != codexTarget {
 		t.Fatalf("legacy primary path = %s, want %s", result.Path, codexTarget)
 	}
-	wantPaths := []string{codexTarget, sharedTarget}
+	wantPaths := []string{codexTarget, sharedTarget, claudeTarget}
 	if len(result.Paths) != len(wantPaths) {
 		t.Fatalf("default paths = %#v, want %#v", result.Paths, wantPaths)
 	}
@@ -88,16 +89,17 @@ func TestInstallDefaultSkillsWritesSharedAndCodexBundles(t *testing.T) {
 			t.Fatalf("default path %d = %s, want %s", index, result.Paths[index], want)
 		}
 	}
-	codexSkill, err := os.ReadFile(filepath.Join(codexTarget, "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sharedSkill, err := os.ReadFile(filepath.Join(sharedTarget, "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(codexSkill, sharedSkill) {
-		t.Fatal("default skill bundles differ")
+	var reference []byte
+	for _, target := range wantPaths {
+		skill, err := os.ReadFile(filepath.Join(target, "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reference == nil {
+			reference = skill
+		} else if !bytes.Equal(reference, skill) {
+			t.Fatal("default skill bundles differ")
+		}
 	}
 }
 
@@ -193,8 +195,8 @@ func TestInstallDefaultSkillsPreflightsAndDeduplicates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(result.Paths) != 1 {
-			t.Fatalf("aliased default paths were not deduplicated: %#v", result.Paths)
+		if len(result.Paths) != 2 {
+			t.Fatalf("aliased Codex/shared paths were not deduplicated alongside Claude: %#v", result.Paths)
 		}
 	})
 }
@@ -216,6 +218,7 @@ func TestSkillCLIWorksOutsideHopProject(t *testing.T) {
 	for _, unexpected := range []string{
 		filepath.Join(home, ".agents", "skills", "hop"),
 		filepath.Join(home, "codex-home", "skills", "hop"),
+		filepath.Join(home, ".claude", "skills", "hop"),
 	} {
 		if _, err := os.Stat(unexpected); !os.IsNotExist(err) {
 			t.Fatalf("explicit --path also installed default target %s: %v", unexpected, err)

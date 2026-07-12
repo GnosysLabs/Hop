@@ -56,9 +56,9 @@ irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
 ```
 
 The installer adds the Hop CLI and writes the same embedded skill version to
-`~/.agents/skills/hop` and `${CODEX_HOME:-~/.codex}/skills/hop`. For CLI-only
-installation, source builds, version pinning, custom locations, and
-verification, see the
+`~/.agents/skills/hop`, `${CODEX_HOME:-~/.codex}/skills/hop`, and
+`~/.claude/skills/hop`. For CLI-only installation, source builds, version
+pinning, custom locations, and verification, see the
 [installation guide](https://githop.xyz/GnosysLabs/Hop/wiki/Installation).
 
 ## Get started
@@ -89,13 +89,18 @@ acceptance, and landing, and whenever `hop sync` runs. Sync is idempotent and
 best-effort: offline failures never block local work, and a later run resends
 from the private local database.
 
+The same grant is also the default for repository creation, issue and pull
+request work, releases, and other same-forge API operations. `hop repo create`,
+`hop forge api`, and `hop auth exec` let agents perform that work without asking
+for a personal access token or opening a second Gitea login session.
+
 For example, Codex Desktop users restart Codex after installation, select a Git
 project, and prompt normally. Other compatible runtimes can read the shared
 skill bundle or receive a single-target installation with the explicit
 `hop skill install --path /path/to/agent/skills --force` form.
 
-Hop is currently an early alpha. Expect its state model and CLI to evolve before
-1.0.
+Hop follows semantic versioning. Backward-incompatible state-model or CLI
+changes require a new major release.
 
 ## Documentation
 

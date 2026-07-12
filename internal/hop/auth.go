@@ -58,6 +58,15 @@ type AuthResult struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
+type ForgeRepository struct {
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+	Private  bool   `json:"private"`
+	HTMLURL  string `json:"html_url"`
+	CloneURL string `json:"clone_url"`
+	SSHURL   string `json:"ssh_url"`
+}
+
 type authProfile struct {
 	Version int    `json:"version"`
 	Server  string `json:"server"`
@@ -350,6 +359,110 @@ func (c *AuthClient) Status(ctx context.Context) (AuthResult, error) {
 		return AuthResult{}, errors.New("Hop user response is missing id or login")
 	}
 	return AuthResult{Forge: profile.Server, Login: user.Login, UserID: user.ID, ExpiresAt: credentialExpiry(credential)}, nil
+}
+
+// CreateRepository creates a repository through the signed-in user's Gitea
+// OAuth grant. The credential never leaves the keychain-backed AuthClient.
+func (c *AuthClient) CreateRepository(ctx context.Context, owner, name string, private bool) (ForgeRepository, error) {
+	owner = strings.TrimSpace(owner)
+	name = strings.TrimSpace(name)
+	if err := validateForgePathSegment("repository owner", owner); err != nil {
+		return ForgeRepository{}, err
+	}
+	if err := validateForgePathSegment("repository name", name); err != nil {
+		return ForgeRepository{}, err
+	}
+	profile, err := c.readProfile()
+	if err != nil {
+		return ForgeRepository{}, err
+	}
+	status, err := c.Status(ctx)
+	if err != nil {
+		return ForgeRepository{}, err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"name":      name,
+		"private":   private,
+		"auto_init": false,
+	})
+	if err != nil {
+		return ForgeRepository{}, fmt.Errorf("encode repository request: %w", err)
+	}
+	suffix := "api/v1/user/repos"
+	if !strings.EqualFold(owner, status.Login) {
+		suffix = "api/v1/orgs/" + url.PathEscape(owner) + "/repos"
+	}
+	body, _, err := c.giteaRequest(ctx, profile.Server, http.MethodPost, suffix, payload)
+	if err != nil {
+		return ForgeRepository{}, fmt.Errorf("create Gitea repository %s/%s: %w", owner, name, err)
+	}
+	var repository ForgeRepository
+	if err := json.Unmarshal(body, &repository); err != nil {
+		return ForgeRepository{}, fmt.Errorf("decode created Gitea repository: %w", err)
+	}
+	if repository.FullName == "" || repository.CloneURL == "" {
+		return ForgeRepository{}, errors.New("Gitea returned an incomplete repository response")
+	}
+	return repository, nil
+}
+
+// ForgeAPI performs an arbitrary same-forge Gitea API operation with the
+// existing OAuth grant. It accepts only relative /api/v1 paths, preventing a
+// caller from forwarding the credential to another origin.
+func (c *AuthClient) ForgeAPI(ctx context.Context, method, apiPath string, body []byte) ([]byte, error) {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete:
+	default:
+		return nil, fmt.Errorf("unsupported forge API method %q", method)
+	}
+	relative, err := url.Parse(strings.TrimSpace(apiPath))
+	if err != nil || relative.IsAbs() || relative.Host != "" || relative.User != nil || relative.Fragment != "" {
+		return nil, errors.New("forge API path must be a relative /api/v1 path")
+	}
+	cleanPath := "/" + strings.TrimLeft(relative.Path, "/")
+	if !strings.HasPrefix(cleanPath, "/api/v1/") {
+		return nil, errors.New("forge API path must start with /api/v1/")
+	}
+	profile, err := c.readProfile()
+	if err != nil {
+		return nil, err
+	}
+	base, err := url.Parse(profile.Server)
+	if err != nil {
+		return nil, err
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + cleanPath
+	base.RawQuery = relative.RawQuery
+	response, _, err := c.oauthEndpointRequest(ctx, profile.Server, method, base.String(), body)
+	if err != nil {
+		return nil, fmt.Errorf("Gitea API %s %s: %w", method, cleanPath, err)
+	}
+	return response, nil
+}
+
+// OAuthAccessToken returns a current access token for a deliberately launched
+// child process. Callers must keep it out of argv, output, and durable files.
+func (c *AuthClient) OAuthAccessToken(ctx context.Context) (string, error) {
+	profile, err := c.readProfile()
+	if err != nil {
+		return "", err
+	}
+	credential, err := c.oauthCredential(ctx, profile.Server, false, "")
+	if err != nil {
+		return "", err
+	}
+	if credential.OAuthAccessToken == "" {
+		return "", ErrNotAuthenticated
+	}
+	return credential.OAuthAccessToken, nil
+}
+
+func validateForgePathSegment(label, value string) error {
+	if value == "" || value == "." || value == ".." || strings.ContainsAny(value, "/\\\x00\r\n") {
+		return fmt.Errorf("invalid %s %q", label, value)
+	}
+	return nil
 }
 
 func credentialExpiry(credential hopCredential) *time.Time {

@@ -13,7 +13,7 @@ Usage: scripts/release-local.sh --snapshot
 
 --snapshot  Test and build all release archives locally without uploading.
 --publish   Test, build, and upload a draft release to githop.xyz.
-            Requires a clean signed tag, LICENSE, and GITEA_TOKEN.
+            Requires a clean signed tag, LICENSE, and Hop OAuth login.
 EOF
 }
 
@@ -33,7 +33,11 @@ done
 
 if [ "$mode" = --publish ]; then
   [ -f LICENSE ] || fail "LICENSE is required before publishing"
-  [ -n "${GITEA_TOKEN:-}" ] || fail "provide a pre-existing scoped GITEA_TOKEN through the local secret store"
+  if [ -z "${GITEA_TOKEN:-}" ]; then
+    [ "${HOP_OAUTH_EXEC:-0}" != 1 ] || fail "Hop OAuth did not provide GITEA_TOKEN"
+    printf 'Using the existing Hop OAuth grant for release publication...\n'
+    HOP_OAUTH_EXEC=1 exec go run ./cmd/hop auth exec --env GITEA_TOKEN -- sh "$0" --publish
+  fi
   [ -z "$(git status --porcelain)" ] || fail "the Git worktree must be clean"
   tag=$(git describe --tags --exact-match HEAD 2>/dev/null) ||
     fail "HEAD must have an exact release tag"

@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -21,6 +23,9 @@ Usage:
   hop auth login FORGE_URL
   hop auth status
   hop auth logout
+  hop auth exec [--env NAME] -- COMMAND [ARG...]
+  hop repo create [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME
+  hop forge api [--method METHOD] [--data JSON|@-] API_PATH
   hop begin [--agent NAME] [--session ID] [--from STATE] (--stdin | --heredoc | "instruction")
   hop prompt [--from STATE] [--agent NAME] (--stdin | --heredoc | "instruction")
   hop checkpoint STATE
@@ -89,7 +94,13 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		return runSkillCLI(commandArgs, jsonOutput, stdout, stderr)
 	}
 	if command == "auth" {
-		return runAuthCLI(ctx, commandArgs, jsonOutput, stdout, stderr)
+		return runAuthCLI(ctx, commandArgs, stdin, jsonOutput, stdout, stderr)
+	}
+	if command == "repo" {
+		return runRepoCLI(ctx, commandArgs, jsonOutput, stdout, stderr)
+	}
+	if command == "forge" {
+		return runForgeCLI(ctx, commandArgs, stdin, jsonOutput, stdout, stderr)
 	}
 	if command == "sync-prompts-worker" {
 		service, err := OpenProject(".")
@@ -598,6 +609,99 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 	return 0
 }
 
+func runRepoCLI(ctx context.Context, args []string, jsonOutput bool, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] != "create" {
+		fmt.Fprintln(stderr, "usage: hop repo create [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME")
+		return 2
+	}
+	fs := flag.NewFlagSet("repo create", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	private := fs.Bool("private", false, "create a private repository")
+	public := fs.Bool("public", false, "create a public repository")
+	remoteName := fs.String("remote", "origin", "Git remote to add")
+	replaceRemote := fs.Bool("replace-remote", false, "replace an existing remote URL")
+	if err := fs.Parse(args[1:]); err != nil || len(fs.Args()) != 1 || (*private && *public) {
+		return 2
+	}
+	fullName := strings.TrimSpace(fs.Args()[0])
+	parts := strings.Split(fullName, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		fmt.Fprintln(stderr, "repository must be OWNER/NAME")
+		return 2
+	}
+	repository, err := OpenRepository(".")
+	if err != nil {
+		return printCLIError(err, jsonOutput, stdout, stderr)
+	}
+	if err := repository.PreflightRemote(ctx, *remoteName, *replaceRemote); err != nil {
+		return printCLIError(err, jsonOutput, stdout, stderr)
+	}
+	auth := NewAuthClient()
+	created, err := auth.CreateRepository(ctx, parts[0], parts[1], *private)
+	if err != nil {
+		return printCLIError(err, jsonOutput, stdout, stderr)
+	}
+	if err := repository.ConfigureRemote(ctx, *remoteName, created.CloneURL, *replaceRemote); err != nil {
+		return printCLIError(err, jsonOutput, stdout, stderr)
+	}
+	result := map[string]any{"repository": created, "remote": *remoteName}
+	if jsonOutput {
+		writeJSON(stdout, map[string]any{"ok": true, "data": result})
+	} else {
+		visibility := "public"
+		if created.Private {
+			visibility = "private"
+		}
+		fmt.Fprintf(stdout, "Created %s repository %s\nConfigured Git remote %s: %s\n", visibility, created.FullName, *remoteName, created.CloneURL)
+	}
+	return 0
+}
+
+func runForgeCLI(ctx context.Context, args []string, stdin io.Reader, jsonOutput bool, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] != "api" {
+		fmt.Fprintln(stderr, "usage: hop forge api [--method METHOD] [--data JSON|@-] API_PATH")
+		return 2
+	}
+	fs := flag.NewFlagSet("forge api", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	method := fs.String("method", http.MethodGet, "HTTP method")
+	data := fs.String("data", "", "JSON request body, or @- to read stdin")
+	if err := fs.Parse(args[1:]); err != nil || len(fs.Args()) != 1 {
+		return 2
+	}
+	var body []byte
+	if *data == "@-" {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(stdin, (16<<20)+1))
+		if err != nil {
+			return printCLIError(fmt.Errorf("read forge API input: %w", err), jsonOutput, stdout, stderr)
+		}
+		if len(body) > 16<<20 {
+			return printCLIError(errors.New("forge API input exceeds 16 MiB"), jsonOutput, stdout, stderr)
+		}
+	} else if *data != "" {
+		body = []byte(*data)
+	}
+	response, err := NewAuthClient().ForgeAPI(ctx, *method, fs.Args()[0], body)
+	if err != nil {
+		return printCLIError(err, jsonOutput, stdout, stderr)
+	}
+	if jsonOutput {
+		var decoded any
+		if len(response) != 0 && json.Unmarshal(response, &decoded) == nil {
+			writeJSON(stdout, map[string]any{"ok": true, "data": decoded})
+		} else {
+			writeJSON(stdout, map[string]any{"ok": true, "data": string(response)})
+		}
+	} else if len(response) != 0 {
+		_, _ = stdout.Write(response)
+		if response[len(response)-1] != '\n' {
+			fmt.Fprintln(stdout)
+		}
+	}
+	return 0
+}
+
 func runSkillCLI(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: hop skill install [--path SKILLS_DIR] [--force] | hop skill print")
@@ -651,9 +755,9 @@ func runSkillCLI(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
 	}
 }
 
-func runAuthCLI(ctx context.Context, args []string, jsonOutput bool, stdout, stderr io.Writer) int {
+func runAuthCLI(ctx context.Context, args []string, stdin io.Reader, jsonOutput bool, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: hop auth login FORGE_URL | hop auth status | hop auth logout")
+		fmt.Fprintln(stderr, "usage: hop auth login FORGE_URL | hop auth status | hop auth logout | hop auth exec [--env NAME] -- COMMAND [ARG...]")
 		return 2
 	}
 	auth := NewAuthClient()
@@ -722,10 +826,62 @@ func runAuthCLI(ctx context.Context, args []string, jsonOutput bool, stdout, std
 			fmt.Fprintf(stdout, "Signed out from %s\n", server)
 		}
 		return 0
+	case "exec":
+		fs := flag.NewFlagSet("auth exec", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		envName := fs.String("env", "GITEA_TOKEN", "environment variable provided to the child")
+		if err := fs.Parse(args[1:]); err != nil || len(fs.Args()) == 0 || !validEnvironmentName(*envName) {
+			return 2
+		}
+		token, err := auth.OAuthAccessToken(ctx)
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		commandArgs := fs.Args()
+		command := exec.CommandContext(ctx, commandArgs[0], commandArgs[1:]...)
+		command.Stdin = stdin
+		command.Env = environmentWithSecret(os.Environ(), *envName, token)
+		var childOut, childErr strings.Builder
+		command.Stdout = &childOut
+		command.Stderr = &childErr
+		runErr := command.Run()
+		_, _ = io.WriteString(stdout, strings.ReplaceAll(childOut.String(), token, "[REDACTED]"))
+		_, _ = io.WriteString(stderr, strings.ReplaceAll(childErr.String(), token, "[REDACTED]"))
+		if runErr == nil {
+			return 0
+		}
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		return printCLIError(fmt.Errorf("run OAuth-authenticated command: %w", runErr), jsonOutput, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown auth command %q\n", args[0])
 		return 2
 	}
+}
+
+func validEnvironmentName(name string) bool {
+	if name == "" || !((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z') || name[0] == '_') {
+		return false
+	}
+	for _, character := range name[1:] {
+		if !((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func environmentWithSecret(environment []string, name, value string) []string {
+	prefix := name + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, prefix+value)
 }
 
 func printCLIError(err error, jsonOutput bool, stdout, stderr io.Writer) int {

@@ -74,8 +74,25 @@ hop skill print
 ```
 
 Without `--path`, Hop installs the same Hop-managed skill files at
-`~/.agents/skills/hop` and `${CODEX_HOME:-~/.codex}/skills/hop`. With `--path`,
-it installs only to `SKILLS_DIR/hop`.
+`~/.agents/skills/hop`, `${CODEX_HOME:-~/.codex}/skills/hop`, and
+`~/.claude/skills/hop`. With `--path`, it installs only to
+`SKILLS_DIR/hop`.
+
+## Authenticated forge operations
+
+```bash
+hop repo create [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME
+hop forge api [--method METHOD] [--data JSON|@-] API_PATH
+hop auth exec [--env NAME] -- COMMAND [ARG...]
+```
+
+All three commands use the current `hop auth login` OAuth grant. `repo create`
+creates a user or organization repository and configures the selected Git
+remote. Existing remotes require `--replace-remote`, which should be used only
+when the user requested a publishing-destination change. `forge api` accepts
+only relative `/api/v1/` paths on the authenticated forge. `auth exec` provides
+the current token to one child process through `GITEA_TOKEN` by default and
+redacts it from captured stdout and stderr.
 
 ## Exit codes
 

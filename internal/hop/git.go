@@ -327,6 +327,66 @@ func (r *Repository) PushAccepted(ctx context.Context, commit string) (result Re
 	return RemotePushResult{Remote: destination.safeRemote, Ref: destination.ref, Commit: commit}, true, nil
 }
 
+// ConfigureRemote adds a publishing remote or replaces its URL when the user
+// explicitly requested a destination change. It does not contact the remote.
+func (r *Repository) ConfigureRemote(ctx context.Context, name, remoteURL string, replace bool) error {
+	name = strings.TrimSpace(name)
+	remoteURL = strings.TrimSpace(remoteURL)
+	if err := validateRemoteName(name); err != nil {
+		return err
+	}
+	if remoteURL == "" {
+		return errors.New("Git remote URL is required")
+	}
+	exists, err := r.remoteExists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("inspect Git remote %s: %w", name, err)
+	}
+	if exists {
+		if !replace {
+			return fmt.Errorf("Git remote %s already exists; pass --replace-remote to change it", name)
+		}
+		if _, err := r.run(ctx, nil, nil, "remote", "set-url", name, remoteURL); err != nil {
+			return fmt.Errorf("replace Git remote %s: %w", name, err)
+		}
+		return nil
+	}
+	if _, err := r.run(ctx, nil, nil, "remote", "add", name, remoteURL); err != nil {
+		return fmt.Errorf("add Git remote %s: %w", name, err)
+	}
+	return nil
+}
+
+func (r *Repository) PreflightRemote(ctx context.Context, name string, replace bool) error {
+	name = strings.TrimSpace(name)
+	if err := validateRemoteName(name); err != nil {
+		return err
+	}
+	exists, err := r.remoteExists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("inspect Git remote %s: %w", name, err)
+	}
+	if exists && !replace {
+		return fmt.Errorf("Git remote %s already exists; pass --replace-remote to change it", name)
+	}
+	return nil
+}
+
+func (r *Repository) remoteExists(ctx context.Context, name string) (bool, error) {
+	output, err := r.run(ctx, nil, nil, "remote")
+	if err != nil {
+		return false, err
+	}
+	return containsString(nonemptyLines(output), name), nil
+}
+
+func validateRemoteName(name string) error {
+	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, " \t\r\n\\/:~^:?*[\x00") {
+		return fmt.Errorf("invalid Git remote name %q", name)
+	}
+	return nil
+}
+
 // PushTag publishes an existing annotated tag without force or ref rewriting.
 // Authentication follows the same same-forge OAuth path as accepted commits.
 func (r *Repository) PushTag(ctx context.Context, tag string) (result RemotePushResult, configured bool, err error) {

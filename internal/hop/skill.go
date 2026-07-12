@@ -36,6 +36,14 @@ func DefaultSharedSkillBase() (string, error) {
 	return filepath.Join(home, ".agents", "skills"), nil
 }
 
+func DefaultClaudeSkillBase() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("find home directory: %w", err)
+	}
+	return filepath.Join(home, ".claude", "skills"), nil
+}
+
 func DefaultSkillBases() ([]string, error) {
 	codex, err := DefaultSkillBase()
 	if err != nil {
@@ -45,7 +53,11 @@ func DefaultSkillBases() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{codex, shared}, nil
+	claude, err := DefaultClaudeSkillBase()
+	if err != nil {
+		return nil, err
+	}
+	return []string{codex, shared, claude}, nil
 }
 
 func EmbeddedSkillText() (string, error) {
@@ -79,9 +91,9 @@ func InstallSkill(base string, force bool) (SkillInstallResult, error) {
 }
 
 // InstallDefaultSkills installs the same embedded files in the client-specific
-// Codex directory and the cross-client .agents directory. Destinations are
-// canonicalized and preflighted before any write to avoid partial upgrades when
-// one existing bundle requires --force.
+// Codex and Claude Code directories and the cross-client .agents directory.
+// Destinations are canonicalized and preflighted before any write to avoid
+// partial upgrades when one existing bundle requires --force.
 func InstallDefaultSkills(force bool) (SkillInstallResult, error) {
 	bases, err := DefaultSkillBases()
 	if err != nil {

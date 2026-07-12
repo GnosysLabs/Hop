@@ -19,10 +19,12 @@ The default Unix location is `~/.local/bin`. On Windows it is
 hop skill install --force
 ```
 
-The command refreshes both default skill bundles. Restart the agent client. For
+The command refreshes all default skill bundles. Restart the agent client. For
 Codex Desktop, mention `$hop` in a task as a deterministic activation fallback.
-For another compatible runtime, confirm that it reads `~/.agents/skills` or run
-`hop skill install --path /path/to/agent/skills --force`.
+Claude Code reads `~/.claude/skills/hop`; if the top-level skills directory was
+created after Claude Code started, restart it. For another compatible runtime,
+confirm that it reads `~/.agents/skills` or run `hop skill install --path
+/path/to/agent/skills --force`.
 
 ## The installer cannot find a release
 

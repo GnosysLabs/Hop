@@ -106,20 +106,43 @@ Check `hop auth status` first. If the account is not authenticated, run the
 login command and let the user approve the browser authorization. Treat this
 device-global OAuth grant as the user's authorization for Hop to access their
 Gitea account. Hop stores it in the OS keychain and refreshes it automatically.
+When status succeeds for the matching forge, do not open a standalone Gitea
+login page or ask the user to sign in again.
 
-Use Hop commands so the same grant automatically authenticates prompt sync and
-Hop-managed Git fetch, push, tag, and release operations for both public and
-private repositories on that forge. Preserve the user's configured remote,
-including SSH-form remotes; Hop applies HTTPS OAuth only for the individual
-operation.
+Use this OAuth grant by default for every in-scope operation on the matching
+forge: prompt sync; Git fetch, push, and tags; repository creation and settings;
+issues, comments, pull requests, releases, and other Gitea API work. Prefer a
+typed Hop command when one exists. This applies to both public and private
+repositories. For example, create a private repository and configure it as the
+publishing destination with:
+
+```bash
+hop repo create --private --replace-remote OWNER/REPOSITORY
+```
+
+Use `--replace-remote` only when the user asked to change an existing remote.
+After landing, Hop's normal authenticated push publishes the accepted code. For
+Gitea operations without a typed command, call the same-forge API without
+handling the token yourself:
+
+```bash
+hop forge api --method PATCH --data '{"state":"closed"}' \
+  /api/v1/repos/OWNER/REPOSITORY/issues/NUMBER
+```
+
+When an established forge tool requires an environment token, run it through
+`hop auth exec --env GITEA_TOKEN -- COMMAND [ARG...]`. Never print that variable
+or write it to a file. Hop redacts the token from the child process's captured
+stdout and stderr. Preserve the user's configured remote, including SSH-form
+remotes, unless their request explicitly changes the publishing destination;
+Hop applies HTTPS OAuth only for each Git operation.
 
 Do not ask for or create a personal access token, embed a token in a URL or Git
-configuration, persistently rewrite a remote, or fall back to a server-wide
-credential merely because a repository is private. If the OAuth grant is
-expired or revoked, repeat `hop auth login https://githop.xyz`. For other
-forges, use only credentials the user already provisioned through an OS secret
-store or the runtime's secret mechanism; never call a token-management
-endpoint.
+configuration, or fall back to a server-wide credential merely because a
+repository is private. If the OAuth grant is expired or revoked, repeat
+`hop auth login https://githop.xyz`. For other forges, use only credentials the
+user already provisioned through an OS secret store or the runtime's secret
+mechanism; never call a token-management endpoint.
 
 ## Execute and auto-accept
 

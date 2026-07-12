@@ -49,7 +49,8 @@ capture boundary.
 The bundled Codex integration uses `CODEX_THREAD_ID` as its stable session key,
 defaults the agent name to `codex`, and lets the user type normally. Its bundle
 is installed at `${CODEX_HOME:-~/.codex}/skills/hop`; the same files are also
-installed at `~/.agents/skills/hop` for compatible clients.
+installed at `~/.agents/skills/hop` for compatible clients and at
+`~/.claude/skills/hop` for Claude Code.
 
 ## Follow-up messages
 

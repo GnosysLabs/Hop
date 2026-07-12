@@ -12,9 +12,9 @@ through a terminal, or tell the agent to work inside `.hop/workspaces`. A Hop
 integration does that coordination for the agent.
 
 Without `--path`, `hop skill install` writes the same Hop-managed skill files to
-`~/.agents/skills/hop` and `${CODEX_HOME:-~/.codex}/skills/hop`. Compatible
-runtimes can use the shared bundle. An explicit `--path` installs only to the
-requested skills directory.
+`~/.agents/skills/hop`, `${CODEX_HOME:-~/.codex}/skills/hop`, and
+`~/.claude/skills/hop`. Compatible runtimes can use the shared bundle. An
+explicit `--path` installs only to the requested skills directory.
 
 ### Codex Desktop example
 
@@ -22,6 +22,13 @@ Restart Codex Desktop after installing or upgrading the skill, select a Git
 project, and ask Codex to work normally. The skill is eligible for implicit
 activation on every repository task; mention `$hop` for deterministic explicit
 activation.
+
+### Claude Code example
+
+The installer writes Hop to Claude Code's personal skill directory at
+`~/.claude/skills/hop`. If that top-level skills directory did not exist when
+Claude Code started, restart Claude Code after installation, then work normally
+in any Git repository.
 
 ## What happens on the first task
 
@@ -76,6 +83,18 @@ of `hop sync`. The same login authenticates Hop's private repository fetch and
 push operations on that forge. Network failures only produce a warning; the local
 database remains the retry source.
 
+That OAuth login is also the default credential for repository, issue, pull
+request, release, and other Gitea API work. For example:
+
+```bash
+hop repo create --private OWNER/REPOSITORY
+hop forge api --method PATCH --data '{"state":"closed"}' \
+  /api/v1/repos/OWNER/REPOSITORY/issues/NUMBER
+```
+
+Agents should not open another Gitea sign-in page when `hop auth status`
+succeeds.
+
 ## Ask for review before landing
 
 Automatic landing is the default because the original task authorizes the
@@ -87,7 +106,7 @@ local code change. To stop at a proposal, say one of the following in the task:
 
 ## Connect another agent runtime
 
-If a compatible runtime does not read `~/.agents/skills`, install the embedded
+If another compatible runtime does not read `~/.agents/skills`, install the embedded
 bundle into that runtime's skills directory:
 
 ```bash

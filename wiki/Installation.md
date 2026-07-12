@@ -19,8 +19,9 @@ The installer:
 6. runs `hop skill install --force` to install the bundled agent integration.
 
 The no-path skill command writes the same Hop-managed skill files to
-`~/.agents/skills/hop` and `${CODEX_HOME:-~/.codex}/skills/hop`. The second path
-supports Codex Desktop; compatible clients can use the shared `.agents` path.
+`~/.agents/skills/hop`, `${CODEX_HOME:-~/.codex}/skills/hop`, and
+`~/.claude/skills/hop`. The client-specific paths support Codex Desktop and
+Claude Code; compatible clients can use the shared `.agents` path.
 
 Review before execution:
 
@@ -56,8 +57,9 @@ irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
 ```
 
 The script verifies the Windows archive, installs to
-`%LOCALAPPDATA%\Programs\Hop`, updates the user PATH, and installs the shared and
-Codex-compatible skill bundles. To pin a version after downloading the script:
+`%LOCALAPPDATA%\Programs\Hop`, updates the user PATH, and installs the shared,
+Codex, and Claude Code skill bundles. To pin a version after downloading the
+script:
 
 ```powershell
 .\install.ps1 -Version v0.1.0
@@ -76,7 +78,7 @@ hop skill install --force
 ```
 
 Put `$(go env GOPATH)/bin` on PATH if `hop` is not found. The second command
-installs both default skill bundles; omit it for a CLI-only installation.
+installs all default skill bundles; omit it for a CLI-only installation.
 
 ## Build from source
 
