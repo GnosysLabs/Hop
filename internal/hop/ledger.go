@@ -81,6 +81,7 @@ func (s *Service) exportPromptLedger(ctx context.Context, destinationRoot string
 		wantedAttempts[attemptID] = struct{}{}
 	}
 	lastPromptByAttempt := make(map[string]string)
+	excludedPromptIDs := make(map[string]struct{})
 	for _, row := range graph {
 		if row.State.Kind == StatePrompt && row.State.Prompt != "" && row.State.AttemptID != "" {
 			lastPromptByAttempt[row.State.AttemptID] = row.State.ID
@@ -92,9 +93,11 @@ func (s *Service) exportPromptLedger(ctx context.Context, destinationRoot string
 			continue
 		}
 		if _, hidden := suppressed[state.ID]; hidden {
+			excludedPromptIDs[state.ID] = struct{}{}
 			continue
 		}
 		if _, reconciliation := decodeReconciliationConflicts(state.Summary); reconciliation || strings.HasPrefix(state.Prompt, "Resolve proposal ") {
+			excludedPromptIDs[state.ID] = struct{}{}
 			continue
 		}
 		if len(wantedAttempts) > 0 {
@@ -155,6 +158,12 @@ func (s *Service) exportPromptLedger(ctx context.Context, destinationRoot string
 	outputDir := filepath.Join(destinationRoot, ".hop", "records", "prompts")
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return PortablePromptLedger{}, fmt.Errorf("create prompt ledger directory: %w", err)
+	}
+	for promptID := range excludedPromptIDs {
+		outputPath := filepath.Join(outputDir, promptID+".json")
+		if err := os.Remove(outputPath); err != nil && !os.IsNotExist(err) {
+			return PortablePromptLedger{}, fmt.Errorf("remove excluded prompt record %s: %w", promptID, err)
+		}
 	}
 	for _, record := range ledger.Prompts {
 		outputPath := filepath.Join(outputDir, record.ID+".json")

@@ -279,6 +279,29 @@ func TestExportOmitsActiveInternalAttempt(t *testing.T) {
 	}
 }
 
+func TestExportRemovesPreviouslyPublishedReconciliationPrompt(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	result, err := service.CreatePrompt(ctx, "Resolve proposal R_TEST against accepted state A_TEST", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordDir := filepath.Join(service.Root, ".hop", "records", "prompts")
+	if err := os.MkdirAll(recordDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := filepath.Join(recordDir, result.Prompt.ID+".json")
+	if err := os.WriteFile(recordPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ExportPromptLedger(ctx, service.Root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("internal reconciliation record still exists: %v", err)
+	}
+}
+
 func TestProposeRespectsSuppressedPromptManifest(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
@@ -1036,6 +1059,33 @@ func TestDisjointProposalsLandAndUndoMovesForward(t *testing.T) {
 	}
 }
 
+func TestAcceptedCommitAttributesPromptingUserAndRetainsHopCommitter(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	runGitTest(t, service.Root, "config", "user.name", "Prompting User")
+	runGitTest(t, service.Root, "config", "user.email", "prompter@example.com")
+
+	attempt, err := service.CreatePrompt(ctx, "Add authored change", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(attempt.Workspace, "authored.txt"), "authored\n")
+	proposal, err := service.Propose(ctx, attempt.Prompt.ID, "Add authored change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := service.Accept(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metadata := runGitTest(t, service.Root, "show", "-s", "--format=%an <%ae>%n%cn <%ce>", accepted.State.GitCommit)
+	want := "Prompting User <prompter@example.com>\nHop <hop@localhost>"
+	if metadata != want {
+		t.Fatalf("accepted commit identity = %q, want %q", metadata, want)
+	}
+}
+
 func TestConcurrentDisjointAcceptancesSerialize(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
@@ -1601,7 +1651,7 @@ func TestLandAutomaticallyPushesAcceptedCommit(t *testing.T) {
 	}
 }
 
-func TestAutomaticPushNeverForcesDivergedRemote(t *testing.T) {
+func TestAutomaticPushReconcilesCompatibleDivergedRemote(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -1647,14 +1697,21 @@ func TestAutomaticPushNeverForcesDivergedRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secondLanded.RemotePush != nil {
-		t.Fatalf("diverged remote unexpectedly reported a successful push: %#v", secondLanded.RemotePush)
+	if secondLanded.RemotePush == nil {
+		t.Fatal("compatible remote advancement was not reconciled and pushed")
 	}
-	if len(secondLanded.Warnings) == 0 || !strings.Contains(strings.Join(secondLanded.Warnings, "\n"), "automatic push failed") {
-		t.Fatalf("diverged remote warnings = %#v", secondLanded.Warnings)
+	if got := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch); got != secondLanded.State.GitCommit {
+		t.Fatalf("remote branch = %s, want reconciled accepted commit %s", got, secondLanded.State.GitCommit)
 	}
-	if got := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch); got != remoteTip {
-		t.Fatalf("automatic push rewrote diverged remote from %s to %s", remoteTip, got)
+	assertTreeFiles(t, service, secondLanded.State.GitCommit, map[string]string{
+		"base.txt":   "base\n",
+		"first.txt":  "first\n",
+		"local.txt":  "local\n",
+		"remote.txt": "remote\n",
+	})
+	parents := strings.Fields(runGitTest(t, service.Root, "show", "-s", "--format=%P", secondLanded.State.GitCommit))
+	if len(parents) != 2 || parents[0] != remoteTip || parents[1] != firstLanded.State.GitCommit {
+		t.Fatalf("reconciled parents = %v, want [%s %s]", parents, remoteTip, firstLanded.State.GitCommit)
 	}
 }
 

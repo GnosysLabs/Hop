@@ -67,7 +67,7 @@ func (e *GitError) Error() string {
 func (e *GitError) Unwrap() error { return e.Err }
 
 // CommitOptions controls a synthetic commit. Empty identities and timestamps
-// use the GitStore defaults; user Git identity configuration is never used.
+// use the GitStore defaults.
 type CommitOptions struct {
 	Message       string
 	Parents       []string
@@ -309,6 +309,25 @@ func (r *Repository) PushAccepted(ctx context.Context, commit string) (result Re
 	if err := validObjectName(commit); err != nil {
 		return result, false, fmt.Errorf("invalid accepted commit: %w", err)
 	}
+	destination, configured, err := r.pushDestination(ctx)
+	if err != nil || !configured {
+		return result, configured, err
+	}
+	if _, err := r.run(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, nil,
+		"push", "--porcelain", destination.remote, commit+":"+destination.ref); err != nil {
+		return result, true, fmt.Errorf("push accepted commit to %s/%s: %w", destination.remote, strings.TrimPrefix(destination.ref, "refs/heads/"), err)
+	}
+	return RemotePushResult{Remote: destination.safeRemote, Ref: destination.ref, Commit: commit}, true, nil
+}
+
+type pushDestination struct {
+	remote     string
+	safeRemote string
+	ref        string
+}
+
+func (r *Repository) pushDestination(ctx context.Context) (pushDestination, bool, error) {
+	var result pushDestination
 	branch, exists, err := r.optionalGitOutput(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return result, false, fmt.Errorf("discover automatic push branch: %w", err)
@@ -375,13 +394,60 @@ func (r *Repository) PushAccepted(ctx context.Context, commit string) (result Re
 	if err := r.validateRef(ctx, ref); err != nil {
 		return result, false, fmt.Errorf("validate automatic push destination: %w", err)
 	}
-
-	if _, err := r.run(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, nil,
-		"push", "--porcelain", remote, commit+":"+ref); err != nil {
-		return result, true, fmt.Errorf("push accepted commit to %s/%s: %w", remote, strings.TrimPrefix(ref, "refs/heads/"), err)
-	}
 	safeRemote, _ := RedactPromptSecrets(remote)
-	return RemotePushResult{Remote: safeRemote, Ref: ref, Commit: commit}, true, nil
+	return pushDestination{remote: remote, safeRemote: safeRemote, ref: ref}, true, nil
+}
+
+// FetchPushTip fetches the configured destination branch without changing the
+// user's branch, index, or working tree. exists is false for a new remote branch.
+func (r *Repository) FetchPushTip(ctx context.Context) (tip string, configured, exists bool, err error) {
+	destination, configured, err := r.pushDestination(ctx)
+	if err != nil || !configured {
+		return "", configured, false, err
+	}
+	output, err := r.run(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, nil,
+		"ls-remote", "--refs", destination.remote, destination.ref)
+	if err != nil {
+		return "", true, false, fmt.Errorf("inspect remote branch %s/%s: %w", destination.remote, strings.TrimPrefix(destination.ref, "refs/heads/"), err)
+	}
+	fields := strings.Fields(output)
+	if len(fields) == 0 {
+		return "", true, false, nil
+	}
+	if len(fields) != 2 || fields[1] != destination.ref {
+		return "", true, false, fmt.Errorf("inspect remote branch %s/%s: unexpected ls-remote response", destination.remote, strings.TrimPrefix(destination.ref, "refs/heads/"))
+	}
+	if err := validObjectName(fields[0]); err != nil {
+		return "", true, false, fmt.Errorf("invalid remote branch tip: %w", err)
+	}
+	if _, err := r.run(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, nil,
+		"fetch", "--no-tags", destination.remote, destination.ref); err != nil {
+		return "", true, false, fmt.Errorf("fetch remote branch %s/%s: %w", destination.remote, strings.TrimPrefix(destination.ref, "refs/heads/"), err)
+	}
+	fetched, err := r.run(ctx, nil, nil, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	if err != nil {
+		return "", true, false, fmt.Errorf("resolve fetched remote branch: %w", err)
+	}
+	fetched = trimLine(fetched)
+	if fetched != fields[0] {
+		return "", true, false, errors.New("fetched remote branch changed while reconciling; retry")
+	}
+	return fetched, true, true, nil
+}
+
+// MergeBase returns the best common ancestor of two commits.
+func (r *Repository) MergeBase(ctx context.Context, left, right string) (string, error) {
+	if err := validObjectName(left); err != nil {
+		return "", fmt.Errorf("invalid left commit: %w", err)
+	}
+	if err := validObjectName(right); err != nil {
+		return "", fmt.Errorf("invalid right commit: %w", err)
+	}
+	output, err := r.run(ctx, nil, nil, "merge-base", left, right)
+	if err != nil {
+		return "", fmt.Errorf("find merge base: %w", err)
+	}
+	return trimLine(output), nil
 }
 
 func (r *Repository) optionalGitOutput(ctx context.Context, args ...string) (string, bool, error) {
@@ -476,6 +542,32 @@ func (r *Repository) CommitTree(ctx context.Context, tree string, parents []stri
 		Message: message,
 		Parents: append([]string(nil), parents...),
 	})
+}
+
+// ConfiguredUserIdentity returns the Git identity configured for the user in
+// this repository. Both user.name and user.email must be present.
+func (r *Repository) ConfiguredUserIdentity(ctx context.Context) (GitIdentity, bool, error) {
+	name, nameSet, err := r.configValue(ctx, "user.name")
+	if err != nil {
+		return GitIdentity{}, false, err
+	}
+	email, emailSet, err := r.configValue(ctx, "user.email")
+	if err != nil {
+		return GitIdentity{}, false, err
+	}
+	if !nameSet || !emailSet {
+		return GitIdentity{}, false, nil
+	}
+	identity := GitIdentity{Name: name, Email: email}
+	if err := validateIdentity(identity); err != nil {
+		return GitIdentity{}, false, fmt.Errorf("invalid configured user identity: %w", err)
+	}
+	return identity, true, nil
+}
+
+// SyntheticIdentity is Hop's controlled committer identity.
+func (r *Repository) SyntheticIdentity() GitIdentity {
+	return r.store.identity(GitIdentity{})
 }
 
 // CommitTreeWithOptions creates a synthetic commit without invoking hooks or
@@ -1301,6 +1393,19 @@ func (s *GitStore) identity(override GitIdentity) GitIdentity {
 		identity.Email = override.Email
 	}
 	return identity
+}
+
+func (r *Repository) configValue(ctx context.Context, key string) (string, bool, error) {
+	output, err := r.run(ctx, nil, nil, "config", "--get", key)
+	if err != nil {
+		var gitErr *GitError
+		if errors.As(err, &gitErr) && gitErr.ExitCode == 1 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read git config %s: %w", key, err)
+	}
+	value := trimLine(output)
+	return value, value != "", nil
 }
 
 func (s *GitStore) now() time.Time {

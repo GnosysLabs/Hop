@@ -750,6 +750,32 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 			return AcceptResult{}, &ConflictError{Paths: mergeConflicts}
 		}
 	}
+	commitParents := []string{current.GitCommit}
+	remoteCtx, cancelRemote := context.WithTimeout(ctx, 30*time.Second)
+	remoteTip, _, remoteExists, err := s.Repo.FetchPushTip(remoteCtx)
+	cancelRemote()
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	if remoteExists && remoteTip != current.GitCommit {
+		candidate, candidateErr := s.Repo.CommitTree(ctx, finalTree, []string{current.GitCommit}, "Hop remote reconciliation candidate\n")
+		if candidateErr != nil {
+			return AcceptResult{}, candidateErr
+		}
+		mergeBase, mergeErr := s.Repo.MergeBase(ctx, candidate, remoteTip)
+		if mergeErr != nil {
+			return AcceptResult{}, mergeErr
+		}
+		var remoteConflicts []string
+		finalTree, remoteConflicts, err = s.Repo.ComposeTrees(ctx, mergeBase, remoteTip, candidate)
+		if err != nil {
+			return AcceptResult{}, err
+		}
+		if len(remoteConflicts) > 0 {
+			return AcceptResult{}, fmt.Errorf("remote accepted-state reconciliation requires agent resolution: %s", strings.Join(remoteConflicts, ", "))
+		}
+		commitParents = []string{remoteTip, current.GitCommit}
+	}
 
 	acceptedID := newID("a")
 	message := proposal.Summary
@@ -757,7 +783,19 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		message = "Accept " + proposal.ID
 	}
 	message += fmt.Sprintf("\n\nHop-State: %s\nHop-Proposal: %s\nHop-Task: %s\nHop-Attempt: %s\n", acceptedID, proposal.ID, proposal.TaskID, proposal.AttemptID)
-	commit, err := s.Repo.CommitTree(ctx, finalTree, []string{current.GitCommit}, message)
+	author, configured, err := s.Repo.ConfiguredUserIdentity(ctx)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	if !configured {
+		author = s.Repo.SyntheticIdentity()
+	}
+	commit, err := s.Repo.CommitTreeWithOptions(ctx, finalTree, CommitOptions{
+		Message:   message,
+		Parents:   commitParents,
+		Author:    author,
+		Committer: s.Repo.SyntheticIdentity(),
+	})
 	if err != nil {
 		return AcceptResult{}, err
 	}
