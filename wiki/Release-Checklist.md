@@ -51,7 +51,8 @@ default skill destinations while preserving unrelated user files.
 1. Update release notes. The signed Git tag is the version source and is
    injected into the binaries automatically.
 2. Run `scripts/release-local.sh --snapshot` and inspect the artifacts.
-3. Create a signed semantic-version tag such as `v0.1.0-alpha.1` and push it.
+3. Create and verify a signed semantic-version tag such as `v1.0.0`, then
+   publish it without force using `hop push-tag v1.0.0`.
 4. Read a pre-provisioned, locally stored scoped token into `GITEA_TOKEN`.
    Do not generate a task-specific token from an agent session.
 5. Run `scripts/release-local.sh --publish`. It reruns race tests, vet, installer

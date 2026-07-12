@@ -32,6 +32,7 @@ Usage:
   hop export [--output PATH]
   hop sync
   hop push
+  hop push-tag TAG
   hop status
   hop graph
   hop state STATE
@@ -415,6 +416,20 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		}
 		if !jsonOutput {
 			printRemotePush(stdout, &result)
+		}
+
+	case "push-tag":
+		if len(commandArgs) != 1 {
+			fmt.Fprintln(stderr, "usage: hop push-tag TAG")
+			return 2
+		}
+		result, err := service.PushTag(ctx, commandArgs[0])
+		value = result
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if !jsonOutput {
+			fmt.Fprintf(stdout, "Pushed tag %s to %s\n", strings.TrimPrefix(result.Ref, "refs/tags/"), result.Remote)
 		}
 
 	case "status":

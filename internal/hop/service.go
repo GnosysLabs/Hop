@@ -677,6 +677,28 @@ func (s *Service) Push(ctx context.Context) (RemotePushResult, error) {
 	return result, nil
 }
 
+// PushTag publishes an existing annotated tag to the same unambiguous remote
+// used for accepted-state pushes. It never creates, rewrites, or force-pushes
+// a tag; release tooling remains responsible for signing and verification.
+func (s *Service) PushTag(ctx context.Context, tag string) (RemotePushResult, error) {
+	release, err := acquireProjectLock(ctx, s.Root, "accept")
+	if err != nil {
+		return RemotePushResult{}, err
+	}
+	defer release()
+	pushCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result, configured, err := s.Repo.PushTag(pushCtx, tag)
+	if err != nil {
+		message, _ := RedactPromptSecrets(err.Error())
+		return RemotePushResult{}, errors.New(message)
+	}
+	if !configured {
+		return RemotePushResult{}, errors.New("hop: no unambiguous Git remote is configured for tag push")
+	}
+	return result, nil
+}
+
 func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []string, materialize bool) (AcceptResult, error) {
 	release, err := acquireProjectLock(ctx, s.Root, "accept")
 	if err != nil {

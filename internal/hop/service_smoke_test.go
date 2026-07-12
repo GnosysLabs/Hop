@@ -1637,6 +1637,30 @@ func TestLandAutomaticallyPushesAcceptedCommit(t *testing.T) {
 	}
 }
 
+func TestPushTagPublishesAnnotatedTag(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTest(t, service.Root, "init", "--quiet", "--bare", remote)
+	runGitTest(t, service.Root, "remote", "add", "origin", remote)
+	accepted, err := service.Store.AcceptedHead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, service.Root, "tag", "-a", "v1.0.0-test", "-m", "test release", accepted.GitCommit)
+
+	result, err := service.PushTag(ctx, "v1.0.0-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Remote != "origin" || result.Ref != "refs/tags/v1.0.0-test" {
+		t.Fatalf("tag push = %#v", result)
+	}
+	if got := runGitTest(t, service.Root, "--git-dir", remote, "cat-file", "-t", result.Ref); got != "tag" {
+		t.Fatalf("remote tag type = %s, want tag", got)
+	}
+}
+
 func TestAutomaticPushReconcilesCompatibleDivergedRemote(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})

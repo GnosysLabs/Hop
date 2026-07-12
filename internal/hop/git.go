@@ -327,6 +327,46 @@ func (r *Repository) PushAccepted(ctx context.Context, commit string) (result Re
 	return RemotePushResult{Remote: destination.safeRemote, Ref: destination.ref, Commit: commit}, true, nil
 }
 
+// PushTag publishes an existing annotated tag without force or ref rewriting.
+// Authentication follows the same same-forge OAuth path as accepted commits.
+func (r *Repository) PushTag(ctx context.Context, tag string) (result RemotePushResult, configured bool, err error) {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || strings.HasPrefix(tag, "refs/") {
+		return result, false, errors.New("tag must be a short tag name")
+	}
+	ref := "refs/tags/" + tag
+	if _, err := r.run(ctx, nil, nil, "check-ref-format", ref); err != nil {
+		return result, false, fmt.Errorf("invalid tag %q: %w", tag, err)
+	}
+	typeName, err := r.run(ctx, nil, nil, "cat-file", "-t", ref)
+	if err != nil {
+		return result, false, fmt.Errorf("resolve tag %q: %w", tag, err)
+	}
+	if strings.TrimSpace(typeName) != "tag" {
+		return result, false, fmt.Errorf("tag %q must be annotated", tag)
+	}
+	commit, err := r.run(ctx, nil, nil, "rev-parse", "--verify", ref+"^{}")
+	if err != nil {
+		return result, false, fmt.Errorf("resolve tag %q target: %w", tag, err)
+	}
+	commit = strings.TrimSpace(commit)
+	if err := validObjectName(commit); err != nil {
+		return result, false, fmt.Errorf("invalid tag target: %w", err)
+	}
+	destination, configured, err := r.pushDestination(ctx)
+	if err != nil || !configured {
+		return result, configured, err
+	}
+	remote, env, err := r.remoteInvocation(ctx, destination.remote)
+	if err != nil {
+		return result, true, err
+	}
+	if _, err := r.run(ctx, env, nil, "push", "--porcelain", remote, ref+":"+ref); err != nil {
+		return result, true, fmt.Errorf("push tag %s to %s: %w", tag, destination.remote, err)
+	}
+	return RemotePushResult{Remote: destination.safeRemote, Ref: ref, Commit: commit}, true, nil
+}
+
 type pushDestination struct {
 	remote     string
 	safeRemote string
