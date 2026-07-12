@@ -1,0 +1,17 @@
+{
+  "id": "P_06FN83DN7R0B9X5TEV3YDC0",
+  "task_id": "T_06FN83DN7SMZB9WJRZNZMTR",
+  "attempt_id": "AT_06FN83DN7VHVF5BVW6DEJ8R",
+  "state_id": "P_06FN83DN7R0B9X5TEV3YDC0",
+  "prompt": "# Files mentioned by the user:\n\n## Screenshot 2026-07-11 at 6.58.29 PM.png: /var/folders/58/b6yn15tx3jb7_6lw9m67f89m0000gn/T/TemporaryItems/NSIRD_screencaptureui_vyA0oe/Screenshot 2026-07-11 at 6.58.29 PM.png\n\n## My request for Codex:\nonce again, there are prompts here that arent mine!",
+  "agent_name": "codex",
+  "status": "proposed",
+  "response_summary": "Purge internal reconciliation prompts from portable records",
+  "created_at": "2026-07-12T02:00:12.350322Z",
+  "metadata": {
+    "source_tree": "27e94b6d19eb7e4107b127e3cec0ca41718053dc",
+    "git_commit": "74ba06de917236754f6146aca0e2d6e10438e455",
+    "attempt_head": "C_06FN83MVSDWQH772HR663SR",
+    "attempt_head_kind": "checkpoint"
+  }
+}

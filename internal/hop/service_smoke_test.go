@@ -279,6 +279,29 @@ func TestExportOmitsActiveInternalAttempt(t *testing.T) {
 	}
 }
 
+func TestExportRemovesPreviouslyPublishedReconciliationPrompt(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	result, err := service.CreatePrompt(ctx, "Resolve proposal R_TEST against accepted state A_TEST", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordDir := filepath.Join(service.Root, ".hop", "records", "prompts")
+	if err := os.MkdirAll(recordDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := filepath.Join(recordDir, result.Prompt.ID+".json")
+	if err := os.WriteFile(recordPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ExportPromptLedger(ctx, service.Root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("internal reconciliation record still exists: %v", err)
+	}
+}
+
 func TestProposeRespectsSuppressedPromptManifest(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
