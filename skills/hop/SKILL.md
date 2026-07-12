@@ -79,10 +79,8 @@ variable or secret-manager name instead.
   `git rebase`, `git reset`, `git stash`, `git worktree`, or `git push`.
 - Do not stage files. Hop captures every nonignored workspace change.
 - Never create, rotate, enumerate, revoke, or paste account access tokens
-  through a provider website or API. For release or publishing work, use only a
-  credential the user has already provisioned in an OS secret store or supplied
-  through the runtime's secret mechanism. If it is missing, stop and ask the
-  user to provision it; do not call a token-management endpoint.
+  through a provider website or API. Follow the forge authentication rules
+  below instead.
 - Give a subagent project-changing work only after creating a distinct Hop
   prompt/attempt for that delegation.
 - Never discard either side of concurrent work. Let Hop perform its three-way
@@ -95,6 +93,33 @@ Verify the captured state before making changes:
 hop state <HOP_STATE_ID> --json
 hop status --json
 ```
+
+## Authenticate to githop.xyz with Hop OAuth
+
+For repositories hosted on `githop.xyz`, the intended authentication method is:
+
+```bash
+hop auth login https://githop.xyz
+```
+
+Check `hop auth status` first. If the account is not authenticated, run the
+login command and let the user approve the browser authorization. Treat this
+device-global OAuth grant as the user's authorization for Hop to access their
+Gitea account. Hop stores it in the OS keychain and refreshes it automatically.
+
+Use Hop commands so the same grant automatically authenticates prompt sync and
+Hop-managed Git fetch, push, tag, and release operations for both public and
+private repositories on that forge. Preserve the user's configured remote,
+including SSH-form remotes; Hop applies HTTPS OAuth only for the individual
+operation.
+
+Do not ask for or create a personal access token, embed a token in a URL or Git
+configuration, persistently rewrite a remote, or fall back to a server-wide
+credential merely because a repository is private. If the OAuth grant is
+expired or revoked, repeat `hop auth login https://githop.xyz`. For other
+forges, use only credentials the user already provisioned through an OS secret
+store or the runtime's secret mechanism; never call a token-management
+endpoint.
 
 ## Execute and auto-accept
 

@@ -105,3 +105,23 @@ func TestReleaseWorkflowRequiresPreProvisionedCredential(t *testing.T) {
 		t.Fatal("release checklist does not forbid agent token management")
 	}
 }
+
+func TestAgentSkillUsesHopOAuthForGithop(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	for _, relative := range []string{
+		"skills/hop/SKILL.md",
+		"skills/hop/references/protocol.md",
+	} {
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(contents)
+		if !strings.Contains(text, "hop auth login https://githop.xyz") {
+			t.Errorf("%s does not direct agents to the intended githop.xyz OAuth login", relative)
+		}
+		if !strings.Contains(text, "private repositories") {
+			t.Errorf("%s does not explain that OAuth covers public and private repositories", relative)
+		}
+	}
+}

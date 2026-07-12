@@ -162,10 +162,23 @@ command, summary, output, or source file.
 
 Hop never creates, rotates, lists, or revokes provider access tokens. Agents
 must not use account token-management APIs or settings pages as a shortcut for
-publishing work. A release or publishing task may use only a pre-existing
-credential the user deliberately provisioned through an OS secret store or the
-runtime's secret mechanism. When that credential is absent or invalid, stop and
-ask the user to replace it; never mint a task-named token.
+publishing work.
+
+For a repository hosted on `githop.xyz`, run `hop auth status` and use
+`hop auth login https://githop.xyz` when authentication is absent, expired, or
+revoked. This device-global OAuth grant is the intended credential for prompt
+sync and Hop-managed Git fetch, push, tag, and release operations against both
+public and private repositories on that forge. Hop stores the grant in the OS
+keychain, refreshes it automatically, and applies HTTPS OAuth per operation
+without persistently changing an SSH-form or HTTPS remote.
+
+Do not request or create a personal access token, place a token in a URL or Git
+configuration, rewrite the user's remote, or substitute a server-wide
+credential for a private repository. For another forge, a release or publishing
+task may use only a pre-existing credential the user deliberately provisioned
+through an OS secret store or the runtime's secret mechanism. When that
+credential is absent or invalid, stop and ask the user to replace it; never mint
+a task-named token.
 
 ## Exit codes
 
