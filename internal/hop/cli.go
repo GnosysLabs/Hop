@@ -218,7 +218,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 	case "export":
 		fs := flag.NewFlagSet("export", flag.ContinueOnError)
 		fs.SetOutput(stderr)
-		output := fs.String("output", "", "write the portable prompt ledger beneath this directory")
+		output := fs.String("output", "", "write a private local prompt export beneath this directory")
 		if err := fs.Parse(commandArgs); err != nil || len(fs.Args()) != 0 {
 			if err == nil {
 				fmt.Fprintln(stderr, "usage: hop export [--output PATH]")
@@ -235,7 +235,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			if root == "" {
 				root = service.Root
 			}
-			fmt.Fprintf(stdout, "Exported %d prompt records to %s\n", len(ledger.Prompts), filepath.Join(root, ".hop", "records", "prompts"))
+			fmt.Fprintf(stdout, "Exported %d private local prompt records to %s\n", len(ledger.Prompts), filepath.Join(root, ".hop", "records", "prompts"))
 		}
 	case "check":
 		stateID, argv, ok := splitCommand(commandArgs)

@@ -73,7 +73,7 @@ func TestInitRefusesAUserTrackedHopDirectory(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, ".hop", "user-owned.txt"), "do not overwrite\n")
 	runGitTest(t, root, "add", "-f", ".hop/user-owned.txt")
 	_, _, err := InitProject(context.Background(), root)
-	if err == nil || !strings.Contains(err.Error(), "local .hop runtime path is already tracked") {
+	if err == nil || !strings.Contains(err.Error(), "private .hop path is already tracked") {
 		t.Fatalf("InitProject error = %v, want tracked local-runtime refusal", err)
 	}
 	contents, readErr := os.ReadFile(filepath.Join(root, ".hop", "user-owned.txt"))
@@ -82,24 +82,15 @@ func TestInitRefusesAUserTrackedHopDirectory(t *testing.T) {
 	}
 }
 
-func TestInitAllowsTrackedPortableHopRecords(t *testing.T) {
+func TestInitRefusesTrackedPromptRecords(t *testing.T) {
 	root := t.TempDir()
 	runGitTest(t, root, "init", "--quiet")
 	writeTestFile(t, filepath.Join(root, ".hop", "records", "prompts.json"), `{"schema_version":1,"prompts":[]}`+"\n")
 	runGitTest(t, root, "add", "-f", ".hop/records/prompts.json")
 
-	service, _, err := InitProject(context.Background(), root)
-	if err != nil {
-		t.Fatalf("InitProject error = %v", err)
-	}
-	t.Cleanup(func() { _ = service.Close() })
-
-	exclude, err := os.ReadFile(filepath.Join(root, ".git", "info", "exclude"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(exclude), "\n.hop/\n") || !strings.Contains(string(exclude), "!.hop/records/**") {
-		t.Fatalf("portable ledger is not allowed by exclude file:\n%s", exclude)
+	_, _, err := InitProject(context.Background(), root)
+	if err == nil || !strings.Contains(err.Error(), "private .hop path is already tracked") {
+		t.Fatalf("InitProject error = %v, want tracked private-path refusal", err)
 	}
 }
 
@@ -228,20 +219,23 @@ func TestConcurrentInitInExistingGitRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(string(exclude), ".hop/*\n"); count != 1 {
-		t.Fatalf("concurrent initialization wrote .hop/* exclusion %d times", count)
+	if count := strings.Count(string(exclude), ".hop/\n"); count != 1 {
+		t.Fatalf("concurrent initialization wrote .hop/ exclusion %d times", count)
+	}
+	if strings.Contains(string(exclude), "!.hop/records") {
+		t.Fatalf("concurrent initialization exposed prompt records:\n%s", exclude)
 	}
 }
 
-func TestProposeExportsPortablePromptLedger(t *testing.T) {
+func TestProposeDoesNotPublishPromptLedger(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
-	result, err := service.CreatePrompt(ctx, "Publish a portable prompt ledger", "", "codex")
+	result, err := service.CreatePrompt(ctx, "Keep this prompt private", "", "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(result.Workspace, "feature.txt"), "done\n")
-	proposal, err := service.Propose(ctx, result.Prompt.ID, "Publish the ledger")
+	proposal, err := service.Propose(ctx, result.Prompt.ID, "Land without publishing the prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,16 +245,8 @@ func TestProposeExportsPortablePromptLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = service.Repo.RemoveWorktree(ctx, materialized, true) })
-	contents, err := os.ReadFile(filepath.Join(materialized, ".hop", "records", "prompts", result.Prompt.ID+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var record PortablePromptRecord
-	if err := json.Unmarshal(contents, &record); err != nil {
-		t.Fatal(err)
-	}
-	if record.ID != result.Prompt.ID || record.Prompt != "Publish a portable prompt ledger" || record.Status != "proposed" || record.ResponseSummary != "Publish the ledger" {
-		t.Fatalf("unexpected portable prompt record: %#v", record)
+	if _, err := os.Stat(filepath.Join(materialized, ".hop")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("proposal published private .hop content: %v", err)
 	}
 }
 

@@ -34,7 +34,7 @@ release.
 |---|---|
 | `hop accept PROPOSAL [-- COMMAND...]` | Accept internally without changing visible files |
 | `hop sync` | Materialize the current accepted tree from a safe accepted ancestor |
-| `hop export [--output PATH]` | Write immutable, repository-safe prompt records to `.hop/records/prompts/` |
+| `hop export [--output PATH]` | Write a private local prompt export to ignored `.hop/records/prompts/` |
 | `hop push` | Retry publishing the current accepted commit to its inferred upstream |
 | `hop undo` | Create a forward-only acceptance that restores the previous accepted tree |
 | `hop doctor [--repair]` | Validate database/object/ref consistency |

@@ -34,9 +34,7 @@ func InitProject(ctx context.Context, path string) (*Service, State, error) {
 		return nil, State{}, err
 	}
 	for _, trackedPath := range trackedHopPaths {
-		if !strings.HasPrefix(filepath.ToSlash(trackedPath), ".hop/records/") {
-			return nil, State{}, fmt.Errorf("cannot initialize Hop: local .hop runtime path is already tracked (for example %s)", trackedPath)
-		}
+		return nil, State{}, fmt.Errorf("cannot initialize Hop: private .hop path is already tracked (for example %s)", trackedPath)
 	}
 	hopDir := filepath.Join(root, ".hop")
 	if err := os.MkdirAll(filepath.Join(hopDir, "workspaces"), 0o755); err != nil {
@@ -599,11 +597,6 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 		if !validated {
 			return ProposalResult{}, fmt.Errorf("reconciliation must pass hop check on the resolved tree before proposing")
 		}
-	}
-	if _, err := s.exportPromptLedger(ctx, attempt.Workspace, promptExportOptions{
-		AttemptIDs: []string{attempt.ID}, Status: "proposed", ResponseSummary: summary,
-	}); err != nil {
-		return ProposalResult{}, err
 	}
 	commit, tree, err := workspaceRepo.Snapshot(ctx, "hop: proposal\n")
 	if err != nil {

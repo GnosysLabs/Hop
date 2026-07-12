@@ -109,8 +109,8 @@ func EnsureRepository(path string) (*Repository, error) {
 	return NewGitStore().Ensure(context.Background(), path)
 }
 
-// OpenRepository opens the repository containing path and keeps Hop's local
-// runtime private while leaving its portable record ledger versionable.
+// OpenRepository opens the repository containing path and keeps all Hop state,
+// including prompt exports, private to the local machine.
 func OpenRepository(path string) (*Repository, error) {
 	return NewGitStore().Open(context.Background(), path)
 }
@@ -254,9 +254,8 @@ func (r *Repository) GitDir() string { return r.gitDir }
 // worktrees.
 func (r *Repository) CommonGitDir() string { return r.commonGitDir }
 
-// EnsureHopExcluded keeps the SQLite cache and disposable workspaces private
-// without excluding .hop/records. The records directory is intentionally
-// versionable so a repository can carry Hop's portable causal history.
+// EnsureHopExcluded keeps the entire .hop directory private. Prompt exports can
+// contain user requests and machine paths, so they must never enter snapshots.
 func (r *Repository) EnsureHopExcluded() error {
 	infoDir := filepath.Join(r.commonGitDir, "info")
 	if err := os.MkdirAll(infoDir, 0o755); err != nil {
@@ -269,18 +268,20 @@ func (r *Repository) EnsureHopExcluded() error {
 	}
 	lines := make([]string, 0)
 	for _, line := range strings.Split(string(contents), "\n") {
-		if strings.TrimSuffix(line, "\r") == ".hop/" {
-			continue // Migrate the legacy blanket exclusion.
+		normalized := strings.TrimSuffix(line, "\r")
+		switch normalized {
+		case ".hop/", ".hop/*", "!.hop/records/", "!.hop/records/**",
+			"# Hop local runtime; .hop/records is intentionally versioned.",
+			"# Hop private local runtime and prompt records.":
+			continue
 		}
 		lines = append(lines, line)
 	}
 	updated := strings.Join(lines, "\n")
-	if !strings.Contains(updated, ".hop/*\n") {
-		if updated != "" && !strings.HasSuffix(updated, "\n") {
-			updated += "\n"
-		}
-		updated += "# Hop local runtime; .hop/records is intentionally versioned.\n.hop/*\n!.hop/records/\n!.hop/records/**\n"
+	if updated != "" && !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
 	}
+	updated += "# Hop private local runtime and prompt records.\n.hop/\n"
 	if updated == string(contents) {
 		return nil
 	}

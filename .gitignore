@@ -1,11 +1,8 @@
 .DS_Store
 
-# Hop's local state and isolated workspaces.
-# Hop's database and disposable workspaces stay local. Its immutable prompt
-# records are intentionally versioned with the repository.
-/.hop/*
-!/.hop/records/
-!/.hop/records/**
+# Hop's local state, prompt records, and isolated workspaces can contain private
+# user requests and machine paths. Never publish them through Git.
+/.hop/
 
 # Local build and verification artifacts.
 /hop

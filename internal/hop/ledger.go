@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// PortablePromptLedger is the versioned, repository-safe subset of Hop's
-// local state. It deliberately excludes SQLite, workspace paths, check output,
-// and every other machine-local runtime detail.
+// PortablePromptLedger is an explicit local export of prompt state. It is kept
+// beneath the ignored .hop directory because prompts and metadata can be private.
 type PortablePromptLedger struct {
 	SchemaVersion int                    `json:"schema_version"`
 	GeneratedAt   time.Time              `json:"generated_at"`
@@ -52,9 +51,8 @@ type suppressedPromptManifest struct {
 	PromptIDs []string `json:"prompt_ids"`
 }
 
-// ExportPromptLedger writes immutable prompt files beneath
-// .hop/records/prompts. Passing attemptIDs restricts the export to those
-// attempts, which keeps concurrent proposals from writing the same files.
+// ExportPromptLedger writes local prompt files beneath .hop/records/prompts.
+// Passing attemptIDs restricts the export to those attempts.
 func (s *Service) ExportPromptLedger(ctx context.Context, destinationRoot string, attemptIDs ...string) (PortablePromptLedger, error) {
 	return s.exportPromptLedger(ctx, destinationRoot, promptExportOptions{AttemptIDs: attemptIDs, PublishableOnly: true})
 }
@@ -199,7 +197,7 @@ func (s *Service) exportPromptLedger(ctx context.Context, destinationRoot string
 		}
 		if err := os.Rename(temporaryPath, outputPath); err != nil {
 			_ = os.Remove(temporaryPath)
-			return PortablePromptLedger{}, fmt.Errorf("publish prompt record %s: %w", record.ID, err)
+			return PortablePromptLedger{}, fmt.Errorf("write prompt record %s: %w", record.ID, err)
 		}
 	}
 	return ledger, nil
