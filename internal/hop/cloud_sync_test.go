@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsePromptRemote(t *testing.T) {
@@ -104,7 +105,10 @@ func TestPromptCloudSyncUsesAuthenticatedRepositoryAndRedactedPortableRecords(t 
 	if err := auth.writeProfile(authProfile{Version: authProfileVersion, Server: server.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if err := auth.storeCredential(server.URL, hopCredential{Token: "sync-access"}); err != nil {
+	if err := auth.storeCredential(server.URL, hopCredential{
+		OAuthAccessToken: "sync-access", OAuthRefreshToken: "sync-refresh", OAuthLogin: "alice",
+		OAuthExpiresAt: time.Now().Add(time.Hour), OAuthScope: "all",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -237,7 +241,10 @@ func TestPromptCloudSyncDoesNotPostAnEmptyLedger(t *testing.T) {
 	if err := auth.writeProfile(authProfile{Version: authProfileVersion, Server: server.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if err := auth.storeCredential(server.URL, hopCredential{Token: "sync-access"}); err != nil {
+	if err := auth.storeCredential(server.URL, hopCredential{
+		OAuthAccessToken: "sync-access", OAuthRefreshToken: "sync-refresh", OAuthLogin: "alice",
+		OAuthExpiresAt: time.Now().Add(time.Hour), OAuthScope: "all",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := service.syncPromptHistory(ctx, auth)

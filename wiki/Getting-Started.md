@@ -71,8 +71,9 @@ hop auth logout
 ```
 
 The repository's Git remote determines where its prompt records belong. After
-pairing, Hop syncs publishable records after `propose`, `accept`, and `land` and
-as part of `hop sync`. Network failures only produce a warning; the local
+pairing, Hop syncs its records after `propose`, `accept`, and `land` and as part
+of `hop sync`. The same login authenticates Hop's private repository fetch and
+push operations on that forge. Network failures only produce a warning; the local
 database remains the retry source.
 
 ## Ask for review before landing

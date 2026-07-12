@@ -30,7 +30,7 @@ const (
 	maxAuthResponse    = 1 << 20
 )
 
-var requiredOAuthScopes = []string{"read:user"}
+var requiredOAuthScopes = []string{"all"}
 
 // AuthConfig is the public OAuth and API discovery document served by a Hop
 // forge. Tokens are exchanged directly with the forge's OAuth provider.
@@ -64,12 +64,18 @@ type authProfile struct {
 }
 
 type hopCredential struct {
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	Token             string    `json:"token,omitempty"`
+	ExpiresAt         time.Time `json:"expires_at,omitempty"`
+	OAuthAccessToken  string    `json:"oauth_access_token"`
+	OAuthRefreshToken string    `json:"oauth_refresh_token"`
+	OAuthTokenType    string    `json:"oauth_token_type,omitempty"`
+	OAuthScope        string    `json:"oauth_scope,omitempty"`
+	OAuthExpiresAt    time.Time `json:"oauth_expires_at,omitempty"`
+	OAuthLogin        string    `json:"oauth_login"`
 }
 
-// oauthTokens exists only on the Login stack. It must never be handed to the
-// credential store; Hop persists only its own least-privilege upload token.
+// oauthTokens is the wire representation used for initial and refresh token
+// exchanges. The resulting grant is persisted only in the OS keychain.
 type oauthTokens struct {
 	AccessToken  string
 	RefreshToken string
@@ -122,6 +128,7 @@ type AuthClient struct {
 	ProfilePath     string
 	OpenBrowser     func(string) error
 	CallbackTimeout time.Duration
+	Now             func() time.Time
 }
 
 func NewAuthClient() *AuthClient {
@@ -142,6 +149,7 @@ func NewAuthClient() *AuthClient {
 		ProfilePath:     defaultAuthProfilePath(),
 		OpenBrowser:     openBrowser,
 		CallbackTimeout: 3 * time.Minute,
+		Now:             time.Now,
 	}
 }
 
@@ -303,12 +311,15 @@ func (c *AuthClient) Login(ctx context.Context, rawServer string, authorizationR
 		return AuthResult{}, err
 	}
 	credential, user, err := c.exchangeForHopToken(ctx, config, oauthToken.AccessToken)
-	// oauthToken (including any refresh token returned by Gitea) is never
-	// persisted and becomes unreachable as soon as this exchange completes.
-	oauthToken = oauthTokens{}
 	if err != nil {
 		return AuthResult{}, err
 	}
+	credential.OAuthAccessToken = oauthToken.AccessToken
+	credential.OAuthRefreshToken = oauthToken.RefreshToken
+	credential.OAuthTokenType = oauthToken.TokenType
+	credential.OAuthScope = oauthToken.Scope
+	credential.OAuthExpiresAt = oauthToken.ExpiresAt
+	credential.OAuthLogin = user.Login
 	if err := c.storeCredential(server, credential); err != nil {
 		return AuthResult{}, err
 	}
@@ -327,15 +338,7 @@ func (c *AuthClient) Status(ctx context.Context) (AuthResult, error) {
 	if err != nil {
 		return AuthResult{}, err
 	}
-	config, err := c.Discover(ctx, profile.Server)
-	if err != nil {
-		return AuthResult{}, err
-	}
-	credential, err := c.loadCredential(profile.Server)
-	if err != nil {
-		return AuthResult{}, err
-	}
-	body, err := c.hopRequest(ctx, credential, http.MethodGet, config.MeEndpoint, nil)
+	body, credential, err := c.giteaRequest(ctx, profile.Server, http.MethodGet, "api/v1/user", nil)
 	if err != nil {
 		return AuthResult{}, err
 	}
@@ -350,6 +353,10 @@ func (c *AuthClient) Status(ctx context.Context) (AuthResult, error) {
 }
 
 func credentialExpiry(credential hopCredential) *time.Time {
+	if !credential.OAuthExpiresAt.IsZero() {
+		expires := credential.OAuthExpiresAt
+		return &expires
+	}
 	if credential.ExpiresAt.IsZero() {
 		return nil
 	}
@@ -379,17 +386,17 @@ func (c *AuthClient) Logout(ctx context.Context) (string, error) {
 		}
 		return unsafeProfile.Server, nil
 	}
-	config, err := c.Discover(ctx, profile.Server)
-	if err != nil {
-		return "", err
-	}
 	credential, err := c.loadCredential(profile.Server)
 	if err != nil && !errors.Is(err, ErrNotAuthenticated) {
 		return "", err
 	}
 	if err == nil {
-		if _, revokeErr := c.hopRequest(ctx, credential, http.MethodPost, config.LogoutEndpoint, []byte(`{}`)); revokeErr != nil && !strings.Contains(revokeErr.Error(), "HTTP 401") {
-			return "", fmt.Errorf("revoke Hop upload token: %w", revokeErr)
+		// The Hop upload token is transitional. Revoke it when the endpoint is
+		// available, but never make local OAuth sign-out depend on the network.
+		if credential.Token != "" {
+			if config, discoverErr := c.Discover(ctx, profile.Server); discoverErr == nil {
+				_, _ = c.hopRequest(ctx, credential, http.MethodPost, config.LogoutEndpoint, []byte(`{}`))
+			}
 		}
 	}
 	if err := c.deleteTokens(profile.Server); err != nil {
@@ -447,10 +454,8 @@ func validateAuthConfig(base *url.URL, config *AuthConfig) error {
 	if strings.TrimSpace(config.ClientID) == "" {
 		return errors.New("Hop OAuth configuration has no client_id")
 	}
-	for _, required := range requiredOAuthScopes {
-		if !slices.Contains(config.Scopes, required) {
-			return fmt.Errorf("Hop OAuth configuration is missing required scope %q", required)
-		}
+	if len(config.Scopes) != 1 || !slices.Equal(config.Scopes, requiredOAuthScopes) {
+		return errors.New("Hop OAuth configuration must advertise exactly the Gitea all scope")
 	}
 	for label, raw := range map[string]*string{
 		"authorization_endpoint": &config.AuthorizationEndpoint,
@@ -564,6 +569,12 @@ func (c *AuthClient) exchangeToken(ctx context.Context, endpoint string, form ur
 	if tokenResponse.RefreshToken == "" {
 		tokenResponse.RefreshToken = previous.RefreshToken
 	}
+	if tokenResponse.Scope == "" {
+		tokenResponse.Scope = previous.Scope
+	}
+	if tokenResponse.TokenType == "" {
+		tokenResponse.TokenType = previous.TokenType
+	}
 	tokens := oauthTokens{
 		AccessToken:  tokenResponse.AccessToken,
 		RefreshToken: tokenResponse.RefreshToken,
@@ -571,7 +582,7 @@ func (c *AuthClient) exchangeToken(ctx context.Context, endpoint string, form ur
 		Scope:        tokenResponse.Scope,
 	}
 	if tokenResponse.ExpiresIn > 0 {
-		tokens.ExpiresAt = time.Now().UTC().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
+		tokens.ExpiresAt = c.now().UTC().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
 	}
 	return tokens, nil
 }
@@ -648,6 +659,138 @@ func (c *AuthClient) hopRequest(ctx context.Context, credential hopCredential, m
 	return responseBody, nil
 }
 
+// giteaRequest uses the user's full OAuth grant directly and retries once with
+// a rotated refresh grant when Gitea reports that the access token expired.
+func (c *AuthClient) giteaRequest(ctx context.Context, server, method, suffix string, body []byte) ([]byte, hopCredential, error) {
+	endpoint, err := appendEndpointPath(server, suffix)
+	if err != nil {
+		return nil, hopCredential{}, err
+	}
+	return c.oauthEndpointRequest(ctx, server, method, endpoint, body)
+}
+
+func (c *AuthClient) oauthEndpointRequest(ctx context.Context, server, method, endpoint string, body []byte) ([]byte, hopCredential, error) {
+	credential, err := c.oauthCredential(ctx, server, false, "")
+	if err != nil {
+		return nil, hopCredential{}, err
+	}
+	responseBody, status, err := c.bearerRequest(ctx, credential.OAuthAccessToken, method, endpoint, body)
+	if err != nil {
+		return nil, hopCredential{}, err
+	}
+	if status == http.StatusUnauthorized {
+		credential, err = c.oauthCredential(ctx, server, true, credential.OAuthAccessToken)
+		if err != nil {
+			return nil, hopCredential{}, err
+		}
+		responseBody, status, err = c.bearerRequest(ctx, credential.OAuthAccessToken, method, endpoint, body)
+		if err != nil {
+			return nil, hopCredential{}, err
+		}
+	}
+	if status < 200 || status >= 300 {
+		return nil, hopCredential{}, responseError("authenticated Gitea request", status, responseBody)
+	}
+	return responseBody, credential, nil
+}
+
+func (c *AuthClient) bearerRequest(ctx context.Context, token, method, endpoint string, body []byte) ([]byte, int, error) {
+	if token == "" {
+		return nil, 0, ErrNotAuthenticated
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, 0, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, (16<<20)+1))
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(responseBody) > 16<<20 {
+		return nil, 0, errors.New("authenticated Gitea response is too large")
+	}
+	return responseBody, response.StatusCode, nil
+}
+
+func (c *AuthClient) oauthCredential(ctx context.Context, server string, force bool, failedToken string) (hopCredential, error) {
+	credential, err := c.loadCredential(server)
+	if err != nil {
+		return hopCredential{}, err
+	}
+	if credential.OAuthAccessToken == "" {
+		return hopCredential{}, errors.New("stored login predates full repository access; run hop auth login again")
+	}
+	refreshSoon := !credential.OAuthExpiresAt.IsZero() && !credential.OAuthExpiresAt.After(c.now().UTC().Add(5*time.Minute))
+	if !force && !refreshSoon {
+		return credential, nil
+	}
+	if credential.OAuthRefreshToken == "" {
+		return hopCredential{}, errors.New("Gitea OAuth session cannot be refreshed; run hop auth login again")
+	}
+	lockPath := c.ProfilePath + ".refresh.lock"
+	release, err := acquireFileLock(ctx, lockPath, "Hop OAuth refresh")
+	if err != nil {
+		return hopCredential{}, err
+	}
+	defer release()
+	credential, err = c.loadCredential(server)
+	if err != nil {
+		return hopCredential{}, err
+	}
+	if force && failedToken != "" && credential.OAuthAccessToken != failedToken {
+		return credential, nil
+	}
+	refreshSoon = !credential.OAuthExpiresAt.IsZero() && !credential.OAuthExpiresAt.After(c.now().UTC().Add(5*time.Minute))
+	if !force && !refreshSoon {
+		return credential, nil
+	}
+	config, err := c.Discover(ctx, server)
+	if err != nil {
+		return hopCredential{}, err
+	}
+	previous := oauthTokens{
+		AccessToken:  credential.OAuthAccessToken,
+		RefreshToken: credential.OAuthRefreshToken,
+		TokenType:    credential.OAuthTokenType,
+		Scope:        credential.OAuthScope,
+		ExpiresAt:    credential.OAuthExpiresAt,
+	}
+	refreshed, err := c.exchangeToken(ctx, config.TokenEndpoint, url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {config.ClientID},
+		"refresh_token": {credential.OAuthRefreshToken},
+	}, previous)
+	if err != nil {
+		return hopCredential{}, fmt.Errorf("refresh Gitea OAuth session: %w", err)
+	}
+	credential.OAuthAccessToken = refreshed.AccessToken
+	credential.OAuthRefreshToken = refreshed.RefreshToken
+	credential.OAuthTokenType = refreshed.TokenType
+	credential.OAuthScope = refreshed.Scope
+	credential.OAuthExpiresAt = refreshed.ExpiresAt
+	if err := c.storeCredential(server, credential); err != nil {
+		return hopCredential{}, err
+	}
+	return credential, nil
+}
+
+func (c *AuthClient) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
 func appendEndpointPath(base, suffix string) (string, error) {
 	parsed, err := url.Parse(base)
 	if err != nil {
@@ -656,6 +799,56 @@ func appendEndpointPath(base, suffix string) (string, error) {
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + strings.TrimLeft(suffix, "/")
 	parsed.RawPath = ""
 	return parsed.String(), nil
+}
+
+// gitRemoteAuthorization turns any same-forge SSH/HTTP remote into a clean
+// HTTPS URL and provides a URL-scoped Basic header through Git's environment
+// config. The OAuth token never appears in argv, the remote URL, or GitError.
+func (c *AuthClient) gitRemoteAuthorization(ctx context.Context, rawRemote string) (string, []string, bool, error) {
+	profile, err := c.readProfile()
+	if errors.Is(err, ErrNotAuthenticated) {
+		return rawRemote, nil, false, nil
+	}
+	if err != nil {
+		return "", nil, false, err
+	}
+	remote, err := parsePromptRemote(rawRemote)
+	if err != nil {
+		return rawRemote, nil, false, nil
+	}
+	forge, err := url.Parse(profile.Server)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if !strings.EqualFold(forge.Hostname(), remote.Host) {
+		return rawRemote, nil, false, nil
+	}
+	credential, err := c.oauthCredential(ctx, profile.Server, false, "")
+	if err != nil {
+		return "", nil, false, err
+	}
+	if strings.TrimSpace(credential.OAuthLogin) == "" {
+		return "", nil, false, errors.New("stored OAuth login is incomplete; run hop auth login again")
+	}
+	forge.Path = strings.TrimRight(forge.Path, "/") + "/" + remote.Repository.Owner + "/" + remote.Repository.Name + ".git"
+	forge.RawPath = ""
+	forge.RawQuery = ""
+	forge.Fragment = ""
+	forge.User = nil
+	target := forge.String()
+	basic := base64.StdEncoding.EncodeToString([]byte(credential.OAuthLogin + ":" + credential.OAuthAccessToken))
+	headerKey := "http." + target + ".extraHeader"
+	env := []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_KEY_0=" + headerKey,
+		"GIT_CONFIG_VALUE_0=",
+		"GIT_CONFIG_KEY_1=" + headerKey,
+		"GIT_CONFIG_VALUE_1=Authorization: Basic " + basic,
+		"GIT_CONFIG_KEY_2=http.followRedirects",
+		"GIT_CONFIG_VALUE_2=false",
+	}
+	return target, env, true, nil
 }
 
 func (c *AuthClient) storeCredential(server string, credential hopCredential) error {
@@ -684,7 +877,7 @@ func (c *AuthClient) loadCredential(server string) (hopCredential, error) {
 		return hopCredential{}, fmt.Errorf("read Hop credential from the OS keychain: %w", err)
 	}
 	var credential hopCredential
-	if err := json.Unmarshal([]byte(encoded), &credential); err != nil || credential.Token == "" {
+	if err := json.Unmarshal([]byte(encoded), &credential); err != nil || (credential.Token == "" && credential.OAuthAccessToken == "") {
 		return hopCredential{}, errors.New("stored Hop credentials are invalid; run hop auth logout, then sign in again")
 	}
 	return credential, nil

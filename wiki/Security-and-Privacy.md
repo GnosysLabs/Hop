@@ -15,17 +15,20 @@ project already tracks.
 
 Prompt history remains local by default. `hop auth login FORGE_URL` starts a
 browser-based OAuth Authorization Code flow with PKCE and a temporary
-`127.0.0.1` callback. Hop requests only `read:user` and `read:repository` and
-stores access and refresh credentials in the operating-system keychain. The
+`127.0.0.1` callback. Hop requests Gitea's `all` scope and stores the access and
+rotating refresh credentials in the operating-system keychain. The
 non-secret forge selection is stored in the user's config directory; tokens
 are never written to `.hop`, Git, command output, or JSON output.
 
 After pairing, Hop derives the repository owner and name from its configured
-Git remote and sends redacted, publishable portable prompt records to the same
-forge origin. The server derives account identity from the bearer token; local
-payloads cannot select a user ID. Sync is private, idempotent, batched, and
-best-effort. Proposal, acceptance, and landing remain successful if the forge
-is offline, and later sync attempts resend records from SQLite.
+Git remote and sends redacted portable prompt records to the same forge origin.
+The server derives account identity and private-repository access from that
+OAuth bearer; local payloads cannot select a user ID. Hop also uses the grant
+for its own same-forge Git fetch/push operations. SSH-form remotes are rewritten
+to HTTPS only for the individual Git invocation, and the token is passed outside
+the process arguments. Sync is private, idempotent, batched, and best-effort.
+Proposal, acceptance, and landing remain successful if the forge is offline,
+and later sync attempts resend records from SQLite.
 
 `hop auth logout` removes the local keychain credential. It does not delete
 local prompt history or previously synced server records.
@@ -68,10 +71,12 @@ Hop does not use `reset --hard`, move the active branch, or write the user's
 real Git index. Visible-root synchronization fails closed when files, ignored
 destinations, or staged state could be overwritten.
 
-Automatic push delegates authentication to the user's existing Git transport
-and credential configuration. Hop does not store remote passwords, SSH private
-keys, or access tokens. It disables terminal credential prompting in the
-background push path and redacts detected credentials from returned errors.
+Automatic push uses the existing Git transport for other forges. For the forge
+selected by `hop auth login`, Hop stores the OAuth grant only in the OS keychain
+and passes a repository-scoped authorization header to its Git subprocess via
+the environment. It never embeds the token in a remote URL or command argument,
+never persists it in Git configuration, disables terminal prompting, and leaves
+the configured remote unchanged.
 
 ## Reporting a vulnerability
 

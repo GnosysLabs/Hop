@@ -49,9 +49,10 @@ release.
 
 Authentication is global to the device, not stored in a repository. The
 selected forge is discovered through `FORGE_URL/hop/api/v1/auth/config` and must
-advertise the `read:user` and `read:repository` scopes. Prompt uploads are
+advertise Gitea's `all` scope. Prompt uploads are
 matched to the repository's configured Git remote; the CLI never submits a
-user ID supplied by local project data.
+user ID supplied by local project data. The same OAuth grant authenticates
+Hop's private same-forge Git fetch and push operations.
 
 ## Inspection
 

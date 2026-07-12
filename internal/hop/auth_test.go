@@ -60,7 +60,7 @@ func (s *memoryCredentialStore) Delete(service, user string) error {
 	return nil
 }
 
-func TestAuthLoginUsesPKCEAndStoresOnlyNonsecretProfile(t *testing.T) {
+func TestAuthLoginUsesPKCEAndStoresFullOAuthGrantOnlyInKeychain(t *testing.T) {
 	credentials := newMemoryCredentialStore()
 	var server *httptest.Server
 	var challenge string
@@ -95,6 +95,11 @@ func TestAuthLoginUsesPKCEAndStoresOnlyNonsecretProfile(t *testing.T) {
 				t.Errorf("me Authorization = %q", got)
 			}
 			_, _ = fmt.Fprint(w, `{"id":7,"login":"alice"}`)
+		case "/api/v1/user":
+			if got := request.Header.Get("Authorization"); got != "Bearer access-secret" {
+				t.Errorf("Gitea user Authorization = %q", got)
+			}
+			_, _ = fmt.Fprint(w, `{"id":7,"login":"alice"}`)
 		case "/hop/api/v1/auth/logout":
 			if got := request.Header.Get("Authorization"); got != "Bearer hop-secret" {
 				t.Errorf("logout Authorization = %q", got)
@@ -122,7 +127,7 @@ func TestAuthLoginUsesPKCEAndStoresOnlyNonsecretProfile(t *testing.T) {
 		if query.Get("response_type") != "code" || query.Get("code_challenge_method") != "S256" {
 			return fmt.Errorf("invalid authorize query: %s", authorize.RawQuery)
 		}
-		if query.Get("scope") != "read:user" {
+		if query.Get("scope") != "all" {
 			return fmt.Errorf("scope = %q", query.Get("scope"))
 		}
 		challenge = query.Get("code_challenge")
@@ -174,8 +179,8 @@ func TestAuthLoginUsesPKCEAndStoresOnlyNonsecretProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := credentials.Get(keyringServiceName, credentialAccount(server.URL))
-	if err != nil || !strings.Contains(stored, "hop-secret") || strings.Contains(stored, "access-secret") || strings.Contains(stored, "refresh-secret") {
-		t.Fatalf("stored credential crossed boundary: %q, %v", stored, err)
+	if err != nil || !strings.Contains(stored, "hop-secret") || !strings.Contains(stored, "access-secret") || !strings.Contains(stored, "refresh-secret") {
+		t.Fatalf("stored full OAuth credential = %q, %v", stored, err)
 	}
 	if _, err := auth.Logout(context.Background()); err != nil {
 		t.Fatal(err)
@@ -185,16 +190,16 @@ func TestAuthLoginUsesPKCEAndStoresOnlyNonsecretProfile(t *testing.T) {
 	}
 }
 
-func TestAuthStatusUsesHopToken(t *testing.T) {
+func TestAuthStatusUsesGiteaOAuthToken(t *testing.T) {
 	credentials := newMemoryCredentialStore()
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/hop/api/v1/auth/config":
 			writeAuthTestConfig(t, w, server.URL)
-		case "/hop/api/v1/auth/me":
-			if request.Header.Get("Authorization") != "Bearer hop-access" {
-				t.Errorf("request did not use Hop token")
+		case "/api/v1/user":
+			if request.Header.Get("Authorization") != "Bearer oauth-access" {
+				t.Errorf("request did not use Gitea OAuth token")
 			}
 			_, _ = fmt.Fprint(w, `{"id":9,"login":"bob"}`)
 		default:
@@ -210,7 +215,10 @@ func TestAuthStatusUsesHopToken(t *testing.T) {
 	if err := auth.writeProfile(authProfile{Version: authProfileVersion, Server: server.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if err := auth.storeCredential(server.URL, hopCredential{Token: "hop-access"}); err != nil {
+	if err := auth.storeCredential(server.URL, hopCredential{
+		Token: "hop-access", OAuthAccessToken: "oauth-access", OAuthRefreshToken: "oauth-refresh",
+		OAuthExpiresAt: time.Now().Add(time.Hour), OAuthLogin: "bob",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := auth.Status(context.Background())
@@ -219,6 +227,97 @@ func TestAuthStatusUsesHopToken(t *testing.T) {
 	}
 	if result.Login != "bob" {
 		t.Fatalf("status = %#v", result)
+	}
+}
+
+func TestAuthRetriesUnauthorizedWithRotatingOAuthGrant(t *testing.T) {
+	credentials := newMemoryCredentialStore()
+	var server *httptest.Server
+	refreshes := 0
+	userRequests := 0
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/hop/api/v1/auth/config":
+			writeAuthTestConfig(t, w, server.URL)
+		case "/oauth/token":
+			refreshes++
+			if err := request.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			if request.Form.Get("grant_type") != "refresh_token" || request.Form.Get("refresh_token") != "refresh-old" || request.Form.Get("client_id") != "public-client" {
+				t.Errorf("refresh form = %v", request.Form)
+			}
+			_, _ = fmt.Fprint(w, `{"access_token":"access-new","refresh_token":"refresh-new","token_type":"bearer","scope":"all","expires_in":3600}`)
+		case "/api/v1/user":
+			userRequests++
+			if request.Header.Get("Authorization") == "Bearer access-old" {
+				http.Error(w, "expired", http.StatusUnauthorized)
+				return
+			}
+			if request.Header.Get("Authorization") != "Bearer access-new" {
+				t.Errorf("retried user request authorization = %q", request.Header.Get("Authorization"))
+			}
+			_, _ = fmt.Fprint(w, `{"id":11,"login":"carol"}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	profilePath := filepath.Join(t.TempDir(), "auth.json")
+	auth := &AuthClient{HTTP: server.Client(), Credentials: credentials, ProfilePath: profilePath, Now: time.Now}
+	if err := auth.writeProfile(authProfile{Version: authProfileVersion, Server: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.storeCredential(server.URL, hopCredential{
+		OAuthAccessToken: "access-old", OAuthRefreshToken: "refresh-old", OAuthScope: "all",
+		OAuthExpiresAt: time.Now().Add(time.Hour), OAuthLogin: "carol",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := auth.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Login != "carol" || refreshes != 1 || userRequests != 2 {
+		t.Fatalf("result=%#v refreshes=%d users=%d", result, refreshes, userRequests)
+	}
+	stored, err := auth.loadCredential(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OAuthAccessToken != "access-new" || stored.OAuthRefreshToken != "refresh-new" || stored.OAuthScope != "all" {
+		t.Fatalf("rotated credential = %#v", stored)
+	}
+}
+
+func TestGitRemoteAuthorizationRewritesSSHWithoutCredentialInURL(t *testing.T) {
+	credentials := newMemoryCredentialStore()
+	profilePath := filepath.Join(t.TempDir(), "auth.json")
+	auth := &AuthClient{Credentials: credentials, ProfilePath: profilePath, Now: time.Now}
+	if err := auth.writeProfile(authProfile{Version: authProfileVersion, Server: "https://githop.example"}); err != nil {
+		t.Fatal(err)
+	}
+	secret := "oauth-access-secret"
+	if err := auth.storeCredential("https://githop.example", hopCredential{
+		OAuthAccessToken: secret, OAuthRefreshToken: "refresh-secret", OAuthLogin: "alice",
+		OAuthExpiresAt: time.Now().Add(time.Hour), OAuthScope: "all",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target, env, ok, err := auth.gitRemoteAuthorization(context.Background(), "git@githop.example:Private/Repo.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || target != "https://githop.example/Private/Repo.git" || strings.Contains(target, secret) {
+		t.Fatalf("target=%q authenticated=%v", target, ok)
+	}
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "GIT_TERMINAL_PROMPT=0") || !strings.Contains(joined, "http.followRedirects") || strings.Contains(joined, "alice:"+secret) {
+		t.Fatalf("Git auth environment is unsafe or incomplete: %s", joined)
+	}
+	other, otherEnv, otherOK, err := auth.gitRemoteAuthorization(context.Background(), "git@other.example:Private/Repo.git")
+	if err != nil || otherOK || other != "git@other.example:Private/Repo.git" || len(otherEnv) != 0 {
+		t.Fatalf("cross-forge remote=%q env=%v ok=%v err=%v", other, otherEnv, otherOK, err)
 	}
 }
 

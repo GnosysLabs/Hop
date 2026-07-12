@@ -89,10 +89,6 @@ func (s *Service) syncPromptHistory(ctx context.Context, auth *AuthClient) (*Pro
 	if err != nil {
 		return nil, err
 	}
-	credential, err := auth.loadCredential(profile.Server)
-	if err != nil {
-		return nil, err
-	}
 	ledger, _, err := s.buildPromptLedger(ctx, s.Root, promptExportOptions{PublishableOnly: false})
 	if err != nil {
 		return nil, err
@@ -149,7 +145,7 @@ func (s *Service) syncPromptHistory(ctx context.Context, auth *AuthClient) (*Pro
 	synced := 0
 	deleted := 0
 	for _, payload := range batches {
-		body, requestErr := auth.hopRequest(ctx, credential, http.MethodPost, config.SyncEndpoint, payload)
+		body, _, requestErr := auth.oauthEndpointRequest(ctx, profile.Server, http.MethodPost, config.SyncEndpoint, payload)
 		if requestErr != nil {
 			return nil, fmt.Errorf("sync private prompt history: %w", requestErr)
 		}

@@ -81,10 +81,13 @@ hop auth login https://githop.xyz
 ```
 
 Hop opens Gitea in the browser, uses OAuth Authorization Code + PKCE, and keeps
-the resulting device credential in the operating-system keychain. Publishable
-prompt records then sync after proposal, acceptance, and landing, and whenever
-`hop sync` runs. Sync is idempotent and best-effort: offline failures never
-block local work, and a later run resends from the private local database.
+the resulting full-account OAuth access and refresh grant in the operating-system
+keychain. That one login powers private prompt sync and Hop's authenticated
+fetch/push operations for same-forge repositories, including repositories whose
+configured remote uses SSH syntax. Prompt records then sync after proposal,
+acceptance, and landing, and whenever `hop sync` runs. Sync is idempotent and
+best-effort: offline failures never block local work, and a later run resends
+from the private local database.
 
 For example, Codex Desktop users restart Codex after installation, select a Git
 project, and prompt normally. Other compatible runtimes can read the shared

@@ -42,6 +42,7 @@ type Repository struct {
 	gitDir       string
 	commonGitDir string
 	store        *GitStore
+	auth         *AuthClient
 }
 
 // GitError reports a failed Git invocation without exposing its environment.
@@ -235,6 +236,7 @@ func (s *GitStore) openRoot(ctx context.Context, root string, addExclude bool) (
 		gitDir:       gitDir,
 		commonGitDir: commonGitDir,
 		store:        s,
+		auth:         NewAuthClient(),
 	}
 	if addExclude {
 		if err := repository.EnsureHopExcluded(); err != nil {
@@ -314,8 +316,12 @@ func (r *Repository) PushAccepted(ctx context.Context, commit string) (result Re
 	if err != nil || !configured {
 		return result, configured, err
 	}
-	if _, err := r.run(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, nil,
-		"push", "--porcelain", destination.remote, commit+":"+destination.ref); err != nil {
+	remote, env, err := r.remoteInvocation(ctx, destination.remote)
+	if err != nil {
+		return result, true, err
+	}
+	if _, err := r.run(ctx, env, nil,
+		"push", "--porcelain", remote, commit+":"+destination.ref); err != nil {
 		return result, true, fmt.Errorf("push accepted commit to %s/%s: %w", destination.remote, strings.TrimPrefix(destination.ref, "refs/heads/"), err)
 	}
 	return RemotePushResult{Remote: destination.safeRemote, Ref: destination.ref, Commit: commit}, true, nil
@@ -406,8 +412,12 @@ func (r *Repository) FetchPushTip(ctx context.Context) (tip string, configured, 
 	if err != nil || !configured {
 		return "", configured, false, err
 	}
-	output, err := r.run(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, nil,
-		"ls-remote", "--refs", destination.remote, destination.ref)
+	remote, env, err := r.remoteInvocation(ctx, destination.remote)
+	if err != nil {
+		return "", true, false, err
+	}
+	output, err := r.run(ctx, env, nil,
+		"ls-remote", "--refs", remote, destination.ref)
 	if err != nil {
 		return "", true, false, fmt.Errorf("inspect remote branch %s/%s: %w", destination.remote, strings.TrimPrefix(destination.ref, "refs/heads/"), err)
 	}
@@ -421,8 +431,8 @@ func (r *Repository) FetchPushTip(ctx context.Context) (tip string, configured, 
 	if err := validObjectName(fields[0]); err != nil {
 		return "", true, false, fmt.Errorf("invalid remote branch tip: %w", err)
 	}
-	if _, err := r.run(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, nil,
-		"fetch", "--no-tags", destination.remote, destination.ref); err != nil {
+	if _, err := r.run(ctx, env, nil,
+		"fetch", "--no-tags", remote, destination.ref); err != nil {
 		return "", true, false, fmt.Errorf("fetch remote branch %s/%s: %w", destination.remote, strings.TrimPrefix(destination.ref, "refs/heads/"), err)
 	}
 	fetched, err := r.run(ctx, nil, nil, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
@@ -434,6 +444,25 @@ func (r *Repository) FetchPushTip(ctx context.Context) (tip string, configured, 
 		return "", true, false, errors.New("fetched remote branch changed while reconciling; retry")
 	}
 	return fetched, true, true, nil
+}
+
+func (r *Repository) remoteInvocation(ctx context.Context, remoteName string) (string, []string, error) {
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
+	if r.auth == nil {
+		return remoteName, env, nil
+	}
+	raw, err := r.run(ctx, nil, nil, "remote", "get-url", "--push", remoteName)
+	if err != nil {
+		return "", nil, fmt.Errorf("read Git push URL for %s: %w", remoteName, err)
+	}
+	target, authEnv, authenticated, err := r.auth.gitRemoteAuthorization(ctx, strings.TrimSpace(raw))
+	if err != nil {
+		return "", nil, fmt.Errorf("prepare OAuth Git access for %s: %w", remoteName, err)
+	}
+	if !authenticated {
+		return remoteName, env, nil
+	}
+	return target, authEnv, nil
 }
 
 // MergeBase returns the best common ancestor of two commits.
