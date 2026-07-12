@@ -24,7 +24,8 @@ and safe multi-agent integration.
 - **Publishing is automatic.** When an upstream branch exists, each accepted
   transition is pushed without moving the local branch or force-pushing.
 - **History stays local by default.** Detected credentials are redacted before
-  prompts and evidence are persisted.
+  prompts and evidence are persisted. Optional authenticated sync keeps prompt
+  history private to the signed-in forge account and never puts it in Git.
 
 ## How it works
 
@@ -72,6 +73,18 @@ a terminal, or work inside `.hop` yourself. After a task, `hop status` shows the
 accepted state and whether the visible project folder is synchronized.
 When the repository has an unambiguous Git upstream, Hop also pushes the
 accepted commit automatically; users do not run `git push` after each task.
+
+To see private prompt history on a Hop-enabled Gitea forge, pair the CLI once:
+
+```bash
+hop auth login https://githop.xyz
+```
+
+Hop opens Gitea in the browser, uses OAuth Authorization Code + PKCE, and keeps
+the resulting device credential in the operating-system keychain. Publishable
+prompt records then sync after proposal, acceptance, and landing, and whenever
+`hop sync` runs. Sync is idempotent and best-effort: offline failures never
+block local work, and a later run resends from the private local database.
 
 For example, Codex Desktop users restart Codex after installation, select a Git
 project, and prompt normally. Other compatible runtimes can read the shared

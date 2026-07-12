@@ -87,6 +87,7 @@ type AcceptResult struct {
 	Check            *Check            `json:"check,omitempty"`
 	MaterializedRoot string            `json:"materialized_root,omitempty"`
 	RemotePush       *RemotePushResult `json:"remote_push,omitempty"`
+	PromptSync       *PromptSyncResult `json:"prompt_sync,omitempty"`
 	Warnings         []string          `json:"warnings,omitempty"`
 }
 
@@ -97,10 +98,12 @@ type RemotePushResult struct {
 }
 
 type SyncResult struct {
-	State     State  `json:"state"`
-	Root      string `json:"root"`
-	FromState string `json:"from_state"`
-	Changed   bool   `json:"changed"`
+	State      State             `json:"state"`
+	Root       string            `json:"root"`
+	FromState  string            `json:"from_state"`
+	Changed    bool              `json:"changed"`
+	PromptSync *PromptSyncResult `json:"prompt_sync,omitempty"`
+	Warnings   []string          `json:"warnings,omitempty"`
 }
 
 type RefreshResult struct {
@@ -145,8 +148,29 @@ type EnvironmentResult struct {
 }
 
 type ProposalResult struct {
-	Proposal State   `json:"proposal"`
-	Checks   []Check `json:"checks"`
+	Proposal   State             `json:"proposal"`
+	Checks     []Check           `json:"checks"`
+	PromptSync *PromptSyncResult `json:"prompt_sync,omitempty"`
+	Warnings   []string          `json:"warnings,omitempty"`
+}
+
+type PromptRepository struct {
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
+}
+
+type PromptSyncResult struct {
+	Server     string           `json:"server"`
+	Repository PromptRepository `json:"repository"`
+	Synced     int              `json:"synced"`
+	Deleted    int              `json:"deleted,omitempty"`
+}
+
+type PromptSyncReceipt struct {
+	StateID  string    `json:"state_id"`
+	Revision string    `json:"revision"`
+	Deleted  bool      `json:"deleted,omitempty"`
+	SyncedAt time.Time `json:"synced_at"`
 }
 
 type DoctorReport struct {

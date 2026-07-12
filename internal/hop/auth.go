@@ -1,0 +1,813 @@
+package hop
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"time"
+
+	keyring "github.com/zalando/go-keyring"
+)
+
+const (
+	authProfileVersion = 1
+	keyringServiceName = "Hop CLI"
+	maxAuthResponse    = 1 << 20
+)
+
+var requiredOAuthScopes = []string{"read:user"}
+
+// AuthConfig is the public OAuth and API discovery document served by a Hop
+// forge. Tokens are exchanged directly with the forge's OAuth provider.
+type AuthConfig struct {
+	AuthorizationEndpoint string   `json:"authorization_endpoint"`
+	TokenEndpoint         string   `json:"token_endpoint"`
+	ExchangeEndpoint      string   `json:"exchange_endpoint"`
+	MeEndpoint            string   `json:"me_endpoint"`
+	LogoutEndpoint        string   `json:"logout_endpoint"`
+	SyncEndpoint          string   `json:"sync_endpoint"`
+	ClientID              string   `json:"client_id"`
+	Scopes                []string `json:"scopes"`
+}
+
+type AuthUser struct {
+	ID       int64  `json:"id"`
+	Login    string `json:"login"`
+	FullName string `json:"full_name,omitempty"`
+}
+
+type AuthResult struct {
+	Forge     string     `json:"forge"`
+	Login     string     `json:"login"`
+	UserID    int64      `json:"user_id"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+type authProfile struct {
+	Version int    `json:"version"`
+	Server  string `json:"server"`
+}
+
+type hopCredential struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
+
+// oauthTokens exists only on the Login stack. It must never be handed to the
+// credential store; Hop persists only its own least-privilege upload token.
+type oauthTokens struct {
+	AccessToken  string
+	RefreshToken string
+	TokenType    string
+	Scope        string
+	ExpiresAt    time.Time
+}
+
+type oauthTokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	TokenType    string `json:"token_type"`
+	Scope        string `json:"scope"`
+	ExpiresIn    int64  `json:"expires_in"`
+}
+
+type hopTokenResponse struct {
+	Token     string    `json:"token"`
+	TokenType string    `json:"token_type"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	User      AuthUser  `json:"user"`
+}
+
+type credentialStore interface {
+	Get(service, user string) (string, error)
+	Set(service, user, password string) error
+	Delete(service, user string) error
+}
+
+type osCredentialStore struct{}
+
+func (osCredentialStore) Get(service, user string) (string, error) {
+	return keyring.Get(service, user)
+}
+
+func (osCredentialStore) Set(service, user, password string) error {
+	return keyring.Set(service, user, password)
+}
+
+func (osCredentialStore) Delete(service, user string) error {
+	return keyring.Delete(service, user)
+}
+
+// AuthClient owns the OAuth browser flow and authenticated Hop API requests.
+// Its dependencies are explicit so the security-sensitive flow can be tested
+// without opening a browser or touching a developer's real keychain.
+type AuthClient struct {
+	HTTP            *http.Client
+	Credentials     credentialStore
+	ProfilePath     string
+	OpenBrowser     func(string) error
+	CallbackTimeout time.Duration
+}
+
+func NewAuthClient() *AuthClient {
+	return &AuthClient{
+		HTTP: &http.Client{
+			Timeout: 2 * time.Minute,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return errors.New("too many HTTP redirects")
+				}
+				if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {
+					return errors.New("refusing a cross-origin Hop API redirect")
+				}
+				return nil
+			},
+		},
+		Credentials:     osCredentialStore{},
+		ProfilePath:     defaultAuthProfilePath(),
+		OpenBrowser:     openBrowser,
+		CallbackTimeout: 3 * time.Minute,
+	}
+}
+
+func defaultAuthProfilePath() string {
+	if configured := strings.TrimSpace(os.Getenv("HOP_AUTH_PROFILE")); configured != "" {
+		return configured
+	}
+	root, err := os.UserConfigDir()
+	if err != nil || root == "" {
+		if home, homeErr := os.UserHomeDir(); homeErr == nil {
+			root = filepath.Join(home, ".config")
+		}
+	}
+	return filepath.Join(root, "hop", "auth.json")
+}
+
+// Login performs Authorization Code + PKCE with a loopback callback. Gitea's
+// public-client redirect registration accepts an arbitrary port on 127.0.0.1,
+// with the callback rooted at http://127.0.0.1:<port>/.
+func (c *AuthClient) Login(ctx context.Context, rawServer string, authorizationReady func(string)) (AuthResult, error) {
+	previousProfile, _ := c.readProfile()
+	server, err := normalizeForgeURL(rawServer)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	config, err := c.Discover(ctx, server)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return AuthResult{}, fmt.Errorf("start OAuth loopback callback: %w", err)
+	}
+	defer listener.Close()
+	redirectURI := "http://" + listener.Addr().String() + "/"
+	state, err := randomBase64URL(32)
+	if err != nil {
+		return AuthResult{}, fmt.Errorf("create OAuth state: %w", err)
+	}
+	verifier, err := randomBase64URL(48)
+	if err != nil {
+		return AuthResult{}, fmt.Errorf("create PKCE verifier: %w", err)
+	}
+	challengeBytes := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
+
+	authorizeURL, err := url.Parse(config.AuthorizationEndpoint)
+	if err != nil {
+		return AuthResult{}, fmt.Errorf("parse authorization endpoint: %w", err)
+	}
+	query := authorizeURL.Query()
+	query.Set("client_id", config.ClientID)
+	query.Set("redirect_uri", redirectURI)
+	query.Set("response_type", "code")
+	query.Set("scope", strings.Join(requiredOAuthScopes, " "))
+	query.Set("state", state)
+	query.Set("code_challenge", challenge)
+	query.Set("code_challenge_method", "S256")
+	authorizeURL.RawQuery = query.Encode()
+
+	type callbackResult struct {
+		code string
+		err  error
+	}
+	callback := make(chan callbackResult, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/" {
+			http.NotFound(w, request)
+			return
+		}
+		providedState := request.URL.Query().Get("state")
+		if subtle.ConstantTimeCompare([]byte(providedState), []byte(state)) != 1 {
+			http.Error(w, "Invalid OAuth state. You may close this tab and retry.", http.StatusBadRequest)
+			return
+		}
+		if oauthError := request.URL.Query().Get("error"); oauthError != "" {
+			description := strings.TrimSpace(request.URL.Query().Get("error_description"))
+			if description == "" {
+				description = oauthError
+			}
+			description, _ = RedactPromptSecrets(description)
+			select {
+			case callback <- callbackResult{err: fmt.Errorf("authorization was not completed: %s", description)}:
+			default:
+			}
+			http.Error(w, "Hop authorization was not completed. You may close this tab.", http.StatusBadRequest)
+			return
+		}
+		code := request.URL.Query().Get("code")
+		if code == "" || len(code) > 4096 {
+			http.Error(w, "Missing OAuth authorization code.", http.StatusBadRequest)
+			return
+		}
+		select {
+		case callback <- callbackResult{code: code}:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = io.WriteString(w, "<!doctype html><title>Hop signed in</title><p>Signed in to Hop. You may close this tab.</p>")
+		default:
+			http.Error(w, "OAuth callback was already handled.", http.StatusConflict)
+		}
+	})
+	callbackServer := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       5 * time.Second,
+	}
+	serveDone := make(chan error, 1)
+	go func() {
+		serveErr := callbackServer.Serve(listener)
+		if errors.Is(serveErr, http.ErrServerClosed) {
+			serveErr = nil
+		}
+		serveDone <- serveErr
+	}()
+
+	if authorizationReady != nil {
+		authorizationReady(authorizeURL.String())
+	}
+	if c.OpenBrowser == nil {
+		c.OpenBrowser = openBrowser
+	}
+	// Browser launch is best effort. Keeping the callback alive lets users copy
+	// the printed URL when a headless host has no opener installed.
+	browserErr := c.OpenBrowser(authorizeURL.String())
+	wait := c.CallbackTimeout
+	if wait <= 0 {
+		wait = 3 * time.Minute
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	var authorizationCode string
+	select {
+	case result := <-callback:
+		if result.err != nil {
+			_ = callbackServer.Close()
+			return AuthResult{}, result.err
+		}
+		authorizationCode = result.code
+	case serveErr := <-serveDone:
+		if serveErr == nil {
+			serveErr = errors.New("OAuth callback server stopped")
+		}
+		return AuthResult{}, serveErr
+	case <-waitCtx.Done():
+		_ = callbackServer.Close()
+		if browserErr != nil {
+			return AuthResult{}, fmt.Errorf("timed out waiting for browser authorization (browser launch failed: %v); visit %s", browserErr, authorizeURL.String())
+		}
+		return AuthResult{}, errors.New("timed out waiting for browser authorization")
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = callbackServer.Shutdown(shutdownCtx)
+	shutdownCancel()
+
+	oauthToken, err := c.exchangeCode(ctx, config, authorizationCode, redirectURI, verifier)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	credential, user, err := c.exchangeForHopToken(ctx, config, oauthToken.AccessToken)
+	// oauthToken (including any refresh token returned by Gitea) is never
+	// persisted and becomes unreachable as soon as this exchange completes.
+	oauthToken = oauthTokens{}
+	if err != nil {
+		return AuthResult{}, err
+	}
+	if err := c.storeCredential(server, credential); err != nil {
+		return AuthResult{}, err
+	}
+	if err := c.writeProfile(authProfile{Version: authProfileVersion, Server: server}); err != nil {
+		_ = c.deleteTokens(server)
+		return AuthResult{}, err
+	}
+	if previousProfile.Server != "" && credentialAccount(previousProfile.Server) != credentialAccount(server) {
+		_ = c.deleteTokens(previousProfile.Server)
+	}
+	return AuthResult{Forge: server, Login: user.Login, UserID: user.ID, ExpiresAt: credentialExpiry(credential)}, nil
+}
+
+func (c *AuthClient) Status(ctx context.Context) (AuthResult, error) {
+	profile, err := c.readProfile()
+	if err != nil {
+		return AuthResult{}, err
+	}
+	config, err := c.Discover(ctx, profile.Server)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	credential, err := c.loadCredential(profile.Server)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	body, err := c.hopRequest(ctx, credential, http.MethodGet, config.MeEndpoint, nil)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	var user AuthUser
+	if err := json.Unmarshal(body, &user); err != nil {
+		return AuthResult{}, fmt.Errorf("decode signed-in Hop user: %w", err)
+	}
+	if user.ID <= 0 || strings.TrimSpace(user.Login) == "" {
+		return AuthResult{}, errors.New("Hop user response is missing id or login")
+	}
+	return AuthResult{Forge: profile.Server, Login: user.Login, UserID: user.ID, ExpiresAt: credentialExpiry(credential)}, nil
+}
+
+func credentialExpiry(credential hopCredential) *time.Time {
+	if credential.ExpiresAt.IsZero() {
+		return nil
+	}
+	expires := credential.ExpiresAt
+	return &expires
+}
+
+func (c *AuthClient) Logout(ctx context.Context) (string, error) {
+	profile, err := c.readProfile()
+	if errors.Is(err, ErrNotAuthenticated) {
+		return "", nil
+	}
+	if err != nil {
+		// Logout is also the recovery path for a corrupted or manually edited
+		// non-secret profile. Best-effort removal must not contact its URL.
+		contents, readErr := os.ReadFile(c.ProfilePath)
+		if readErr != nil {
+			return "", err
+		}
+		var unsafeProfile authProfile
+		_ = json.Unmarshal(contents, &unsafeProfile)
+		if unsafeProfile.Server != "" {
+			_ = c.deleteTokens(unsafeProfile.Server)
+		}
+		if removeErr := os.Remove(c.ProfilePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return "", fmt.Errorf("remove invalid Hop auth profile: %w", removeErr)
+		}
+		return unsafeProfile.Server, nil
+	}
+	config, err := c.Discover(ctx, profile.Server)
+	if err != nil {
+		return "", err
+	}
+	credential, err := c.loadCredential(profile.Server)
+	if err != nil && !errors.Is(err, ErrNotAuthenticated) {
+		return "", err
+	}
+	if err == nil {
+		if _, revokeErr := c.hopRequest(ctx, credential, http.MethodPost, config.LogoutEndpoint, []byte(`{}`)); revokeErr != nil && !strings.Contains(revokeErr.Error(), "HTTP 401") {
+			return "", fmt.Errorf("revoke Hop upload token: %w", revokeErr)
+		}
+	}
+	if err := c.deleteTokens(profile.Server); err != nil {
+		return "", err
+	}
+	if err := os.Remove(c.ProfilePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("remove Hop auth profile: %w", err)
+	}
+	return profile.Server, nil
+}
+
+var ErrNotAuthenticated = errors.New("not signed in; run hop auth login https://your-forge.example")
+
+func (c *AuthClient) Discover(ctx context.Context, server string) (AuthConfig, error) {
+	base, err := url.Parse(server)
+	if err != nil {
+		return AuthConfig{}, fmt.Errorf("parse Hop server: %w", err)
+	}
+	discovery := *base
+	discovery.Path = strings.TrimRight(discovery.Path, "/") + "/hop/api/v1/auth/config"
+	discovery.RawPath = ""
+	discovery.RawQuery = ""
+	discovery.Fragment = ""
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, discovery.String(), nil)
+	if err != nil {
+		return AuthConfig{}, err
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		return AuthConfig{}, fmt.Errorf("discover Hop OAuth configuration: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxAuthResponse+1))
+	if err != nil {
+		return AuthConfig{}, fmt.Errorf("read Hop OAuth configuration: %w", err)
+	}
+	if len(body) > maxAuthResponse {
+		return AuthConfig{}, errors.New("Hop OAuth configuration response is too large")
+	}
+	if response.StatusCode != http.StatusOK {
+		return AuthConfig{}, responseError("discover Hop OAuth configuration", response.StatusCode, body)
+	}
+	var config AuthConfig
+	if err := json.Unmarshal(body, &config); err != nil {
+		return AuthConfig{}, fmt.Errorf("decode Hop OAuth configuration: %w", err)
+	}
+	if err := validateAuthConfig(base, &config); err != nil {
+		return AuthConfig{}, err
+	}
+	return config, nil
+}
+
+func validateAuthConfig(base *url.URL, config *AuthConfig) error {
+	if strings.TrimSpace(config.ClientID) == "" {
+		return errors.New("Hop OAuth configuration has no client_id")
+	}
+	for _, required := range requiredOAuthScopes {
+		if !slices.Contains(config.Scopes, required) {
+			return fmt.Errorf("Hop OAuth configuration is missing required scope %q", required)
+		}
+	}
+	for label, raw := range map[string]*string{
+		"authorization_endpoint": &config.AuthorizationEndpoint,
+		"token_endpoint":         &config.TokenEndpoint,
+		"exchange_endpoint":      &config.ExchangeEndpoint,
+		"me_endpoint":            &config.MeEndpoint,
+		"logout_endpoint":        &config.LogoutEndpoint,
+		"sync_endpoint":          &config.SyncEndpoint,
+	} {
+		resolved, err := resolveTrustedEndpoint(base, *raw)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", label, err)
+		}
+		*raw = resolved
+	}
+	return nil
+}
+
+func resolveTrustedEndpoint(base *url.URL, raw string) (string, error) {
+	endpoint, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	endpoint = base.ResolveReference(endpoint)
+	if endpoint.User != nil || endpoint.Fragment != "" || endpoint.RawQuery != "" {
+		return "", errors.New("endpoint must not contain credentials, a query, or a fragment")
+	}
+	if !sameOrigin(base, endpoint) {
+		return "", errors.New("endpoint is not on the selected forge origin")
+	}
+	if !secureHTTPURL(endpoint) {
+		return "", errors.New("endpoint must use HTTPS (HTTP is allowed only for loopback testing)")
+	}
+	return endpoint.String(), nil
+}
+
+func normalizeForgeURL(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", fmt.Errorf("parse forge URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", errors.New("forge URL must include https:// and a host")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("forge URL must not include credentials, a query, or a fragment")
+	}
+	if !secureHTTPURL(parsed) {
+		return "", errors.New("forge URL must use HTTPS (HTTP is allowed only for loopback testing)")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
+func secureHTTPURL(endpoint *url.URL) bool {
+	if endpoint.Scheme == "https" {
+		return true
+	}
+	if endpoint.Scheme != "http" {
+		return false
+	}
+	host := strings.ToLower(endpoint.Hostname())
+	return host == "127.0.0.1" || host == "::1" || host == "localhost"
+}
+
+func sameOrigin(left, right *url.URL) bool {
+	return strings.EqualFold(left.Scheme, right.Scheme) && strings.EqualFold(left.Host, right.Host)
+}
+
+func (c *AuthClient) exchangeCode(ctx context.Context, config AuthConfig, code, redirectURI, verifier string) (oauthTokens, error) {
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {config.ClientID},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"code_verifier": {verifier},
+	}
+	return c.exchangeToken(ctx, config.TokenEndpoint, form, oauthTokens{})
+}
+
+func (c *AuthClient) exchangeToken(ctx context.Context, endpoint string, form url.Values, previous oauthTokens) (oauthTokens, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return oauthTokens{}, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		return oauthTokens{}, fmt.Errorf("exchange OAuth token: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxAuthResponse+1))
+	if err != nil {
+		return oauthTokens{}, fmt.Errorf("read OAuth token response: %w", err)
+	}
+	if len(body) > maxAuthResponse {
+		return oauthTokens{}, errors.New("OAuth token response is too large")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return oauthTokens{}, responseError("exchange OAuth token", response.StatusCode, body)
+	}
+	var tokenResponse oauthTokenResponse
+	if err := json.Unmarshal(body, &tokenResponse); err != nil {
+		return oauthTokens{}, fmt.Errorf("decode OAuth token response: %w", err)
+	}
+	if strings.TrimSpace(tokenResponse.AccessToken) == "" {
+		return oauthTokens{}, errors.New("OAuth token response has no access_token")
+	}
+	if tokenResponse.RefreshToken == "" {
+		tokenResponse.RefreshToken = previous.RefreshToken
+	}
+	tokens := oauthTokens{
+		AccessToken:  tokenResponse.AccessToken,
+		RefreshToken: tokenResponse.RefreshToken,
+		TokenType:    tokenResponse.TokenType,
+		Scope:        tokenResponse.Scope,
+	}
+	if tokenResponse.ExpiresIn > 0 {
+		tokens.ExpiresAt = time.Now().UTC().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
+	}
+	return tokens, nil
+}
+
+func (c *AuthClient) exchangeForHopToken(ctx context.Context, config AuthConfig, temporaryGiteaToken string) (hopCredential, AuthUser, error) {
+	deviceName, err := os.Hostname()
+	if err != nil || strings.TrimSpace(deviceName) == "" {
+		deviceName = runtime.GOOS + " device"
+	}
+	payload, err := json.Marshal(map[string]string{"device_name": deviceName})
+	if err != nil {
+		return hopCredential{}, AuthUser{}, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, config.ExchangeEndpoint, strings.NewReader(string(payload)))
+	if err != nil {
+		return hopCredential{}, AuthUser{}, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+temporaryGiteaToken)
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		return hopCredential{}, AuthUser{}, fmt.Errorf("exchange temporary Gitea authorization for Hop token: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxAuthResponse+1))
+	if err != nil {
+		return hopCredential{}, AuthUser{}, err
+	}
+	if len(body) > maxAuthResponse {
+		return hopCredential{}, AuthUser{}, errors.New("Hop token response is too large")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return hopCredential{}, AuthUser{}, responseError("exchange temporary Gitea authorization for Hop token", response.StatusCode, body)
+	}
+	var result hopTokenResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return hopCredential{}, AuthUser{}, fmt.Errorf("decode Hop token response: %w", err)
+	}
+	if strings.TrimSpace(result.Token) == "" || result.User.ID <= 0 || strings.TrimSpace(result.User.Login) == "" {
+		return hopCredential{}, AuthUser{}, errors.New("Hop token response is missing token or user identity")
+	}
+	return hopCredential{Token: result.Token, ExpiresAt: result.ExpiresAt}, result.User, nil
+}
+
+func (c *AuthClient) hopRequest(ctx context.Context, credential hopCredential, method, endpoint string, body []byte) ([]byte, error) {
+	if credential.Token == "" {
+		return nil, ErrNotAuthenticated
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+credential.Token)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, (16<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(responseBody) > 16<<20 {
+		return nil, errors.New("authenticated Hop response is too large")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, responseError("authenticated Hop request", response.StatusCode, responseBody)
+	}
+	return responseBody, nil
+}
+
+func appendEndpointPath(base, suffix string) (string, error) {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + strings.TrimLeft(suffix, "/")
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
+func (c *AuthClient) storeCredential(server string, credential hopCredential) error {
+	encoded, err := json.Marshal(credential)
+	if err != nil {
+		return fmt.Errorf("encode Hop credential: %w", err)
+	}
+	if c.Credentials == nil {
+		return errors.New("OS credential store is unavailable")
+	}
+	if err := c.Credentials.Set(keyringServiceName, credentialAccount(server), string(encoded)); err != nil {
+		return fmt.Errorf("store Hop credential in the OS keychain: %w", err)
+	}
+	return nil
+}
+
+func (c *AuthClient) loadCredential(server string) (hopCredential, error) {
+	if c.Credentials == nil {
+		return hopCredential{}, errors.New("OS credential store is unavailable")
+	}
+	encoded, err := c.Credentials.Get(keyringServiceName, credentialAccount(server))
+	if errors.Is(err, keyring.ErrNotFound) {
+		return hopCredential{}, ErrNotAuthenticated
+	}
+	if err != nil {
+		return hopCredential{}, fmt.Errorf("read Hop credential from the OS keychain: %w", err)
+	}
+	var credential hopCredential
+	if err := json.Unmarshal([]byte(encoded), &credential); err != nil || credential.Token == "" {
+		return hopCredential{}, errors.New("stored Hop credentials are invalid; run hop auth logout, then sign in again")
+	}
+	return credential, nil
+}
+
+func (c *AuthClient) deleteTokens(server string) error {
+	if c.Credentials == nil {
+		return errors.New("OS credential store is unavailable")
+	}
+	err := c.Credentials.Delete(keyringServiceName, credentialAccount(server))
+	if errors.Is(err, keyring.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete OAuth credentials from the OS keychain: %w", err)
+	}
+	return nil
+}
+
+func credentialAccount(server string) string {
+	parsed, err := url.Parse(server)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return strings.ToLower(strings.TrimRight(server, "/"))
+	}
+	return strings.ToLower(parsed.Scheme + "://" + parsed.Host)
+}
+
+func (c *AuthClient) readProfile() (authProfile, error) {
+	contents, err := os.ReadFile(c.ProfilePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return authProfile{}, ErrNotAuthenticated
+	}
+	if err != nil {
+		return authProfile{}, fmt.Errorf("read Hop auth profile: %w", err)
+	}
+	var profile authProfile
+	if err := json.Unmarshal(contents, &profile); err != nil {
+		return authProfile{}, fmt.Errorf("decode Hop auth profile: %w", err)
+	}
+	if profile.Version != authProfileVersion || profile.Server == "" {
+		return authProfile{}, errors.New("Hop auth profile is invalid; run hop auth logout, then sign in again")
+	}
+	normalized, err := normalizeForgeURL(profile.Server)
+	if err != nil {
+		return authProfile{}, errors.New("Hop auth profile has an unsafe forge URL; remove it with hop auth logout")
+	}
+	profile.Server = normalized
+	return profile, nil
+}
+
+func (c *AuthClient) writeProfile(profile authProfile) error {
+	if c.ProfilePath == "" {
+		return errors.New("Hop auth profile path is unavailable")
+	}
+	if err := os.MkdirAll(filepath.Dir(c.ProfilePath), 0o700); err != nil {
+		return fmt.Errorf("create Hop config directory: %w", err)
+	}
+	contents, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(c.ProfilePath), ".auth-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create Hop auth profile: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(append(contents, '\n')); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, c.ProfilePath); err != nil {
+		return fmt.Errorf("write Hop auth profile: %w", err)
+	}
+	return nil
+}
+
+func (c *AuthClient) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return &http.Client{Timeout: 2 * time.Minute}
+}
+
+func responseError(action string, status int, body []byte) error {
+	message := strings.TrimSpace(string(body))
+	if len(message) > 2048 {
+		message = message[:2048]
+	}
+	message, _ = RedactPromptSecrets(message)
+	if message == "" {
+		return fmt.Errorf("%s: HTTP %d", action, status)
+	}
+	return fmt.Errorf("%s: HTTP %d: %s", action, status, message)
+}
+
+func randomBase64URL(bytes int) (string, error) {
+	value := make([]byte, bytes)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func openBrowser(target string) error {
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		command = exec.Command("open", target)
+	case "windows":
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	default:
+		command = exec.Command("xdg-open", target)
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return nil
+}

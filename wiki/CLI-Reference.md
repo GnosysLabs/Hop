@@ -33,11 +33,25 @@ release.
 | Command | Purpose |
 |---|---|
 | `hop accept PROPOSAL [-- COMMAND...]` | Accept internally without changing visible files |
-| `hop sync` | Materialize the current accepted tree from a safe accepted ancestor |
+| `hop sync` | Materialize the accepted tree and retry authenticated private prompt sync |
 | `hop export [--output PATH]` | Write a private local prompt export to ignored `.hop/records/prompts/` |
 | `hop push` | Retry publishing the current accepted commit to its inferred upstream |
 | `hop undo` | Create a forward-only acceptance that restores the previous accepted tree |
 | `hop doctor [--repair]` | Validate database/object/ref consistency |
+
+## Forge authentication
+
+| Command | Purpose |
+|---|---|
+| `hop auth login FORGE_URL` | Pair this device through browser OAuth + PKCE |
+| `hop auth status` | Verify the signed-in forge account, refreshing the session if needed |
+| `hop auth logout` | Delete the local device credential from the OS keychain |
+
+Authentication is global to the device, not stored in a repository. The
+selected forge is discovered through `FORGE_URL/hop/api/v1/auth/config` and must
+advertise the `read:user` and `read:repository` scopes. Prompt uploads are
+matched to the repository's configured Git remote; the CLI never submits a
+user ID supplied by local project data.
 
 ## Inspection
 

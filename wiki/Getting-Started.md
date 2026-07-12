@@ -53,6 +53,28 @@ If the active Git branch has an upstream—or the repository has one unambiguous
 commit automatically. Hop never force-pushes. Repositories without a remote
 remain local without treating that as an error.
 
+## Sync private prompt history
+
+Prompt history is local by default. Pair Hop with a Hop-enabled Gitea forge if
+you want the private web history view:
+
+```bash
+hop auth login https://githop.xyz
+```
+
+Your browser asks Gitea to authorize this device. After approval, verify the
+connection or remove it with:
+
+```bash
+hop auth status
+hop auth logout
+```
+
+The repository's Git remote determines where its prompt records belong. After
+pairing, Hop syncs publishable records after `propose`, `accept`, and `land` and
+as part of `hop sync`. Network failures only produce a warning; the local
+database remains the retry source.
+
 ## Ask for review before landing
 
 Automatic landing is the default because the original task authorizes the

@@ -178,6 +178,7 @@ func (s *Service) CreatePrompt(ctx context.Context, message, fromStateID, agent 
 		return PromptResult{}, err
 	}
 	result.Redactions = redactions
+	s.schedulePromptCloudSync()
 	return result, nil
 }
 
@@ -633,7 +634,9 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	}
 	_ = s.Store.UpdateAttemptStatus(ctx, attempt.ID, "proposed")
 	_ = s.Store.UpdateTaskStatus(ctx, task.ID, "proposed")
-	return ProposalResult{Proposal: proposal, Checks: checks}, nil
+	result := ProposalResult{Proposal: proposal, Checks: checks}
+	s.attachPromptCloudSync(ctx, &result.PromptSync, &result.Warnings)
+	return result, nil
 }
 
 // Accept advances Hop's internal accepted lineage without changing the visible
@@ -699,6 +702,7 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 			result.MaterializedRoot = s.Root
 		}
 		s.attachAutomaticPush(ctx, &result)
+		s.attachPromptCloudSync(ctx, &result.PromptSync, &result.Warnings)
 		return result, nil
 	}
 	attempt, err := s.Store.GetAttempt(ctx, proposal.AttemptID)
@@ -916,6 +920,7 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		result.MaterializedRoot = s.Root
 	}
 	s.attachAutomaticPush(ctx, &result)
+	s.attachPromptCloudSync(ctx, &result.PromptSync, &result.Warnings)
 	return result, nil
 }
 
@@ -953,7 +958,18 @@ func (s *Service) Sync(ctx context.Context) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 	defer release()
-	return s.syncLocked(ctx)
+	result, err := s.syncLocked(ctx)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	promptSync, syncErr := s.SyncPromptHistory(ctx)
+	if syncErr != nil && !errors.Is(syncErr, ErrNotAuthenticated) {
+		message, _ := RedactPromptSecrets(syncErr.Error())
+		result.Warnings = append(result.Warnings, "private prompt history remains local; cloud sync failed: "+message)
+	} else {
+		result.PromptSync = promptSync
+	}
+	return result, nil
 }
 
 // Refresh prepares an agent-editable three-way conflict tree in the original

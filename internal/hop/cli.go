@@ -11,12 +11,16 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"time"
 )
 
 const usageText = `Hop — prompt-native version control
 
 Usage:
   hop init [path]
+  hop auth login FORGE_URL
+  hop auth status
+  hop auth logout
   hop begin [--agent NAME] [--session ID] [--from STATE] (--stdin | --heredoc | "instruction")
   hop prompt [--from STATE] [--agent NAME] (--stdin | --heredoc | "instruction")
   hop checkpoint STATE
@@ -82,6 +86,20 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 	}
 	if command == "skill" {
 		return runSkillCLI(commandArgs, jsonOutput, stdout, stderr)
+	}
+	if command == "auth" {
+		return runAuthCLI(ctx, commandArgs, jsonOutput, stdout, stderr)
+	}
+	if command == "sync-prompts-worker" {
+		service, err := OpenProject(".")
+		if err != nil {
+			return 0
+		}
+		defer service.Close()
+		workerCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		_, _ = service.SyncPromptHistory(workerCtx)
+		return 0
 	}
 
 	if command == "init" {
@@ -274,6 +292,10 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		value = result
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Created proposal %s · tree %s · %d matching checks\n", result.Proposal.ID, shortHash(result.Proposal.SourceTree), len(result.Checks))
+			printPromptSync(stdout, result.PromptSync)
+			for _, warning := range result.Warnings {
+				fmt.Fprintf(stderr, "Warning: %s\n", warning)
+			}
 		}
 
 	case "accept":
@@ -290,6 +312,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Accepted internally as %s · tree %s · visible root unchanged\n", result.State.ID, shortHash(result.State.SourceTree))
 			printRemotePush(stdout, result.RemotePush)
+			printPromptSync(stdout, result.PromptSync)
 			if result.Check == nil {
 				fmt.Fprintln(stdout, "No final-state validation command was supplied.")
 			}
@@ -335,6 +358,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			fmt.Fprintf(stdout, "Landed as %s · tree %s\n", result.State.ID, shortHash(result.State.SourceTree))
 			fmt.Fprintf(stdout, "Synchronized visible root: %s\n", result.MaterializedRoot)
 			printRemotePush(stdout, result.RemotePush)
+			printPromptSync(stdout, result.PromptSync)
 			if result.Check == nil {
 				fmt.Fprintln(stdout, "No final-state validation command was supplied.")
 			}
@@ -372,6 +396,10 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 				fmt.Fprintf(stdout, "Synchronized %s to accepted state %s\n", result.Root, result.State.ID)
 			} else {
 				fmt.Fprintf(stdout, "Visible root already matches accepted state %s\n", result.State.ID)
+			}
+			printPromptSync(stdout, result.PromptSync)
+			for _, warning := range result.Warnings {
+				fmt.Fprintf(stderr, "Warning: %s\n", warning)
 			}
 		}
 
@@ -608,6 +636,83 @@ func runSkillCLI(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
 	}
 }
 
+func runAuthCLI(ctx context.Context, args []string, jsonOutput bool, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: hop auth login FORGE_URL | hop auth status | hop auth logout")
+		return 2
+	}
+	auth := NewAuthClient()
+	switch args[0] {
+	case "login":
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, "usage: hop auth login FORGE_URL")
+			return 2
+		}
+		result, err := auth.Login(ctx, args[1], func(target string) {
+			if !jsonOutput {
+				fmt.Fprintf(stdout, "Opening browser…\nIf it does not open, visit: %s\n", target)
+			}
+		})
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if jsonOutput {
+			writeJSON(stdout, map[string]any{"ok": true, "data": result})
+		} else {
+			fmt.Fprintf(stdout, "✓ Signed in as %s\n", result.Login)
+		}
+		if service, openErr := OpenProject("."); openErr == nil {
+			backfillCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+			synced, syncErr := service.syncPromptHistory(backfillCtx, auth)
+			cancel()
+			_ = service.Close()
+			if syncErr != nil {
+				if !jsonOutput {
+					fmt.Fprintf(stderr, "Warning: signed in, but initial private prompt sync failed: %v\n", syncErr)
+				}
+			} else if !jsonOutput {
+				printPromptSync(stdout, synced)
+			}
+		}
+		return 0
+	case "status":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "usage: hop auth status")
+			return 2
+		}
+		result, err := auth.Status(ctx)
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if jsonOutput {
+			writeJSON(stdout, map[string]any{"ok": true, "data": result})
+		} else {
+			fmt.Fprintf(stdout, "Signed in as %s\nForge: %s\n", result.Login, result.Forge)
+		}
+		return 0
+	case "logout":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "usage: hop auth logout")
+			return 2
+		}
+		server, err := auth.Logout(ctx)
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if jsonOutput {
+			writeJSON(stdout, map[string]any{"ok": true, "data": map[string]string{"server": server}})
+		} else if server == "" {
+			fmt.Fprintln(stdout, "Not signed in.")
+		} else {
+			fmt.Fprintf(stdout, "Signed out from %s\n", server)
+		}
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unknown auth command %q\n", args[0])
+		return 2
+	}
+}
+
 func printCLIError(err error, jsonOutput bool, stdout, stderr io.Writer) int {
 	code := 1
 	var conflict *ConflictError
@@ -666,6 +771,13 @@ func printRemotePush(w io.Writer, result *RemotePushResult) {
 		return
 	}
 	fmt.Fprintf(w, "Pushed accepted commit to %s/%s\n", result.Remote, strings.TrimPrefix(result.Ref, "refs/heads/"))
+}
+
+func printPromptSync(w io.Writer, result *PromptSyncResult) {
+	if result == nil {
+		return
+	}
+	fmt.Fprintf(w, "Synced %d private prompts for %s/%s\n", result.Synced, result.Repository.Owner, result.Repository.Name)
 }
 
 func removeFlag(args []string, wanted string) (bool, []string) {

@@ -4,11 +4,31 @@
 
 Hop stores state in the project under `.hop/`. Prompt text, source trees,
 commands, and check output are local unless the project or its filesystem is
-copied elsewhere. SQLite data is not encrypted at rest.
+copied elsewhere, or the user explicitly pairs Hop with a forge account.
+SQLite data is not encrypted at rest.
 
 `.hop/` is excluded through `.git/info/exclude`, so ordinary Git operations do
 not publish it. Initialization refuses to hide a `.hop` directory that the
 project already tracks.
+
+## Private prompt sync
+
+Prompt history remains local by default. `hop auth login FORGE_URL` starts a
+browser-based OAuth Authorization Code flow with PKCE and a temporary
+`127.0.0.1` callback. Hop requests only `read:user` and `read:repository` and
+stores access and refresh credentials in the operating-system keychain. The
+non-secret forge selection is stored in the user's config directory; tokens
+are never written to `.hop`, Git, command output, or JSON output.
+
+After pairing, Hop derives the repository owner and name from its configured
+Git remote and sends redacted, publishable portable prompt records to the same
+forge origin. The server derives account identity from the bearer token; local
+payloads cannot select a user ID. Sync is private, idempotent, batched, and
+best-effort. Proposal, acceptance, and landing remain successful if the forge
+is offline, and later sync attempts resend records from SQLite.
+
+`hop auth logout` removes the local keychain credential. It does not delete
+local prompt history or previously synced server records.
 
 ## Credential redaction
 

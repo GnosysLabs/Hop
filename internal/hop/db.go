@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 var (
 	ErrNotFound            = errors.New("hop: not found")
@@ -244,6 +244,22 @@ var migrations = []migration{
 			 WHERE kind = 'accepted'
 			 ORDER BY created_at, id
 			 LIMIT 1`,
+		},
+	},
+	{
+		version: 4,
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS prompt_sync_receipts (
+				server TEXT NOT NULL,
+				repository_owner TEXT NOT NULL,
+				repository_name TEXT NOT NULL,
+				state_id TEXT NOT NULL,
+				revision TEXT NOT NULL,
+				deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+				synced_at TEXT NOT NULL,
+				PRIMARY KEY (server, repository_owner, repository_name, state_id)
+			) STRICT`,
+			`CREATE INDEX IF NOT EXISTS prompt_sync_receipts_state_idx ON prompt_sync_receipts(state_id)`,
 		},
 	},
 }
@@ -1563,6 +1579,71 @@ func (s *Store) Graph(ctx context.Context, taskID string) ([]GraphRow, error) {
 		graph = append(graph, GraphRow{State: state, Parents: parents})
 	}
 	return graph, nil
+}
+
+// PromptSyncReceipts returns content-free acknowledgements for one private
+// account/repository destination. The revision is a digest of the redacted
+// wire record; no prompt text is duplicated in this retry metadata.
+func (s *Store) PromptSyncReceipts(ctx context.Context, server, owner, name string) (map[string]PromptSyncReceipt, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT state_id, revision, deleted, synced_at
+		FROM prompt_sync_receipts
+		WHERE server = ? AND repository_owner = ? COLLATE NOCASE AND repository_name = ? COLLATE NOCASE`, server, owner, name)
+	if err != nil {
+		return nil, fmt.Errorf("query prompt sync receipts: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]PromptSyncReceipt)
+	for rows.Next() {
+		var receipt PromptSyncReceipt
+		var deleted int
+		var syncedAt string
+		if err := rows.Scan(&receipt.StateID, &receipt.Revision, &deleted, &syncedAt); err != nil {
+			return nil, fmt.Errorf("scan prompt sync receipt: %w", err)
+		}
+		receipt.Deleted = deleted != 0
+		receipt.SyncedAt, err = parseTime(syncedAt)
+		if err != nil {
+			return nil, err
+		}
+		result[receipt.StateID] = receipt
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate prompt sync receipts: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) RecordPromptSyncReceipts(ctx context.Context, server, owner, name string, receipts []PromptSyncReceipt) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin prompt sync receipt update: %w", err)
+	}
+	defer tx.Rollback()
+	for _, receipt := range receipts {
+		when := receipt.SyncedAt
+		if when.IsZero() {
+			when = time.Now().UTC()
+		}
+		deleted := 0
+		if receipt.Deleted {
+			deleted = 1
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO prompt_sync_receipts
+			(server, repository_owner, repository_name, state_id, revision, deleted, synced_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(server, repository_owner, repository_name, state_id)
+			DO UPDATE SET revision = excluded.revision, deleted = excluded.deleted, synced_at = excluded.synced_at`,
+			server, owner, name, receipt.StateID, receipt.Revision, deleted, formatTime(when)); err != nil {
+			return fmt.Errorf("record prompt sync receipt %s: %w", receipt.StateID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit prompt sync receipts: %w", err)
+	}
+	return nil
 }
 
 // AcceptedHistory follows canonical_parent edges from newest to oldest.

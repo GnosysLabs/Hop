@@ -28,6 +28,8 @@ type PortablePromptRecord struct {
 	Status          string                 `json:"status"`
 	ResponseSummary string                 `json:"response_summary,omitempty"`
 	CreatedAt       time.Time              `json:"created_at"`
+	SourceUpdatedAt time.Time              `json:"source_updated_at"`
+	Revision        string                 `json:"revision"`
 	CompletedAt     *time.Time             `json:"completed_at,omitempty"`
 	Metadata        PortablePromptMetadata `json:"metadata"`
 }
@@ -61,96 +63,9 @@ func (s *Service) exportPromptLedger(ctx context.Context, destinationRoot string
 	if destinationRoot == "" {
 		destinationRoot = s.Root
 	}
-	graph, err := s.Store.Graph(ctx, "")
+	ledger, excludedPromptIDs, err := s.buildPromptLedger(ctx, destinationRoot, options)
 	if err != nil {
 		return PortablePromptLedger{}, err
-	}
-	suppressed, err := loadSuppressedPromptIDs(destinationRoot)
-	if err != nil {
-		return PortablePromptLedger{}, err
-	}
-	ledger := PortablePromptLedger{
-		SchemaVersion: 1,
-		GeneratedAt:   time.Now().UTC(),
-		Prompts:       make([]PortablePromptRecord, 0),
-	}
-	wantedAttempts := make(map[string]struct{}, len(options.AttemptIDs))
-	for _, attemptID := range options.AttemptIDs {
-		wantedAttempts[attemptID] = struct{}{}
-	}
-	lastPromptByAttempt := make(map[string]string)
-	excludedPromptIDs := make(map[string]struct{})
-	for _, row := range graph {
-		if row.State.Kind == StatePrompt && row.State.Prompt != "" && row.State.AttemptID != "" {
-			lastPromptByAttempt[row.State.AttemptID] = row.State.ID
-		}
-	}
-	for _, row := range graph {
-		state := row.State
-		if state.Kind != StatePrompt || state.Prompt == "" {
-			continue
-		}
-		if _, hidden := suppressed[state.ID]; hidden {
-			excludedPromptIDs[state.ID] = struct{}{}
-			continue
-		}
-		if _, reconciliation := decodeReconciliationConflicts(state.Summary); reconciliation || strings.HasPrefix(state.Prompt, "Resolve proposal ") {
-			excludedPromptIDs[state.ID] = struct{}{}
-			continue
-		}
-		if len(wantedAttempts) > 0 {
-			if _, wanted := wantedAttempts[state.AttemptID]; !wanted {
-				continue
-			}
-		}
-		if state.AttemptID == "" {
-			continue
-		}
-		attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
-		if err != nil {
-			return PortablePromptLedger{}, fmt.Errorf("read attempt for prompt %s: %w", state.ID, err)
-		}
-		var head State
-		if attempt.HeadStateID != "" {
-			head, err = s.Store.GetState(ctx, attempt.HeadStateID)
-			if err != nil {
-				return PortablePromptLedger{}, fmt.Errorf("read attempt head for prompt %s: %w", state.ID, err)
-			}
-		}
-		if options.PublishableOnly && head.Kind != StateProposal && head.Kind != StateAccepted {
-			continue
-		}
-
-		record := PortablePromptRecord{
-			ID:        state.ID,
-			TaskID:    state.TaskID,
-			AttemptID: state.AttemptID,
-			StateID:   state.ID,
-			Prompt:    state.Prompt,
-			AgentName: state.Agent,
-			Status:    attempt.Status,
-			CreatedAt: state.CreatedAt,
-			Metadata: PortablePromptMetadata{
-				SourceTree: state.SourceTree,
-				GitCommit:  state.GitCommit,
-			},
-		}
-		record.Metadata.AttemptHead = attempt.HeadStateID
-		record.Metadata.AttemptHeadKind = string(head.Kind)
-		if lastPromptByAttempt[state.AttemptID] == state.ID {
-			record.ResponseSummary = head.Summary
-			if options.ResponseSummary != "" {
-				record.ResponseSummary = options.ResponseSummary
-			}
-		}
-		if options.Status != "" {
-			record.Status = options.Status
-		}
-		if head.Kind == StateAccepted || head.Kind == StateFailed || head.Kind == StateCancelled {
-			completedAt := head.CreatedAt
-			record.CompletedAt = &completedAt
-		}
-		ledger.Prompts = append(ledger.Prompts, record)
 	}
 
 	outputDir := filepath.Join(destinationRoot, ".hop", "records", "prompts")
@@ -201,6 +116,108 @@ func (s *Service) exportPromptLedger(ctx context.Context, destinationRoot string
 		}
 	}
 	return ledger, nil
+}
+
+// buildPromptLedger derives portable records directly from the local database.
+// Cloud sync uses this in-memory form as a durable retry source, while export
+// handles the separate concern of writing private files beneath .hop.
+func (s *Service) buildPromptLedger(ctx context.Context, suppressionRoot string, options promptExportOptions) (PortablePromptLedger, map[string]struct{}, error) {
+	graph, err := s.Store.Graph(ctx, "")
+	if err != nil {
+		return PortablePromptLedger{}, nil, err
+	}
+	suppressed, err := loadSuppressedPromptIDs(suppressionRoot)
+	if err != nil {
+		return PortablePromptLedger{}, nil, err
+	}
+	ledger := PortablePromptLedger{
+		SchemaVersion: 1,
+		GeneratedAt:   time.Now().UTC(),
+		Prompts:       make([]PortablePromptRecord, 0),
+	}
+	wantedAttempts := make(map[string]struct{}, len(options.AttemptIDs))
+	for _, attemptID := range options.AttemptIDs {
+		wantedAttempts[attemptID] = struct{}{}
+	}
+	lastPromptByAttempt := make(map[string]string)
+	excludedPromptIDs := make(map[string]struct{})
+	for _, row := range graph {
+		if row.State.Kind == StatePrompt && row.State.Prompt != "" && row.State.AttemptID != "" {
+			lastPromptByAttempt[row.State.AttemptID] = row.State.ID
+		}
+	}
+	for _, row := range graph {
+		state := row.State
+		if state.Kind != StatePrompt || state.Prompt == "" {
+			continue
+		}
+		if _, hidden := suppressed[state.ID]; hidden {
+			excludedPromptIDs[state.ID] = struct{}{}
+			continue
+		}
+		if _, reconciliation := decodeReconciliationConflicts(state.Summary); reconciliation || strings.HasPrefix(state.Prompt, "Resolve proposal ") {
+			excludedPromptIDs[state.ID] = struct{}{}
+			continue
+		}
+		if len(wantedAttempts) > 0 {
+			if _, wanted := wantedAttempts[state.AttemptID]; !wanted {
+				continue
+			}
+		}
+		if state.AttemptID == "" {
+			continue
+		}
+		attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
+		if err != nil {
+			return PortablePromptLedger{}, nil, fmt.Errorf("read attempt for prompt %s: %w", state.ID, err)
+		}
+		var head State
+		if attempt.HeadStateID != "" {
+			head, err = s.Store.GetState(ctx, attempt.HeadStateID)
+			if err != nil {
+				return PortablePromptLedger{}, nil, fmt.Errorf("read attempt head for prompt %s: %w", state.ID, err)
+			}
+		}
+		if options.PublishableOnly && head.Kind != StateProposal && head.Kind != StateAccepted {
+			continue
+		}
+
+		record := PortablePromptRecord{
+			ID:              state.ID,
+			TaskID:          state.TaskID,
+			AttemptID:       state.AttemptID,
+			StateID:         state.ID,
+			Prompt:          state.Prompt,
+			AgentName:       state.Agent,
+			Status:          attempt.Status,
+			CreatedAt:       state.CreatedAt,
+			SourceUpdatedAt: state.CreatedAt,
+			Metadata: PortablePromptMetadata{
+				SourceTree: state.SourceTree,
+				GitCommit:  state.GitCommit,
+			},
+		}
+		record.Metadata.AttemptHead = attempt.HeadStateID
+		record.Metadata.AttemptHeadKind = string(head.Kind)
+		if head.CreatedAt.After(record.SourceUpdatedAt) {
+			record.SourceUpdatedAt = head.CreatedAt
+		}
+		if lastPromptByAttempt[state.AttemptID] == state.ID {
+			record.ResponseSummary = head.Summary
+			if options.ResponseSummary != "" {
+				record.ResponseSummary = options.ResponseSummary
+			}
+		}
+		if options.Status != "" {
+			record.Status = options.Status
+		}
+		if head.Kind == StateAccepted || head.Kind == StateFailed || head.Kind == StateCancelled {
+			completedAt := head.CreatedAt
+			record.CompletedAt = &completedAt
+		}
+		ledger.Prompts = append(ledger.Prompts, record)
+	}
+	return ledger, excludedPromptIDs, nil
 }
 
 func loadSuppressedPromptIDs(destinationRoot string) (map[string]struct{}, error) {
