@@ -11,10 +11,15 @@ param(
 $ErrorActionPreference = "Stop"
 $GiteaUrl = $GiteaUrl.TrimEnd("/")
 
-switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
-    "X64" { $arch = "amd64" }
-    "Arm64" { $arch = "arm64" }
-    default { throw "Unsupported Windows architecture: $($_)" }
+$architecture = if ($env:PROCESSOR_ARCHITEW6432) {
+    [string]$env:PROCESSOR_ARCHITEW6432
+} else {
+    [string]$env:PROCESSOR_ARCHITECTURE
+}
+switch ($architecture.ToUpperInvariant()) {
+    "AMD64" { $arch = "amd64" }
+    "ARM64" { $arch = "arm64" }
+    default { throw "Unsupported Windows architecture: $architecture" }
 }
 
 $asset = "hop_windows_${arch}.zip"
@@ -90,5 +95,6 @@ try {
 } finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tempDir
 }
+
 
 
