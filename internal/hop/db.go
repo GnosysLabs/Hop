@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 4
+const schemaVersion = 5
 
 var (
 	ErrNotFound            = errors.New("hop: not found")
@@ -260,6 +260,18 @@ var migrations = []migration{
 				PRIMARY KEY (server, repository_owner, repository_name, state_id)
 			) STRICT`,
 			`CREATE INDEX IF NOT EXISTS prompt_sync_receipts_state_idx ON prompt_sync_receipts(state_id)`,
+		},
+	},
+	{
+		version: 5,
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS prompt_completions (
+				prompt_state_id TEXT PRIMARY KEY REFERENCES states(id) ON DELETE CASCADE,
+				summary TEXT NOT NULL,
+				final_response TEXT NOT NULL,
+				completed_at TEXT NOT NULL
+			) STRICT`,
+			`CREATE INDEX IF NOT EXISTS prompt_completions_completed_idx ON prompt_completions(completed_at, prompt_state_id)`,
 		},
 	},
 }
@@ -1579,6 +1591,88 @@ func (s *Store) Graph(ctx context.Context, taskID string) ([]GraphRow, error) {
 		graph = append(graph, GraphRow{State: state, Parents: parents})
 	}
 	return graph, nil
+}
+
+// PutPromptCompletion durably records the answer for a prompt. Repeating the
+// call updates that prompt in place so an interrupted final-delivery sequence
+// can safely retry before the response is shown to the user.
+func (s *Store) PutPromptCompletion(ctx context.Context, completion PromptCompletion) (PromptCompletion, error) {
+	if strings.TrimSpace(completion.StateID) == "" {
+		return PromptCompletion{}, errors.New("hop: prompt state ID is required")
+	}
+	if strings.TrimSpace(completion.Summary) == "" {
+		return PromptCompletion{}, errors.New("hop: completion summary is required")
+	}
+	if strings.TrimSpace(completion.FinalResponse) == "" {
+		return PromptCompletion{}, errors.New("hop: final response is required")
+	}
+	if completion.CompletedAt.IsZero() {
+		completion.CompletedAt = time.Now().UTC()
+	}
+	for name, value := range map[string]string{"summary": completion.Summary, "final response": completion.FinalResponse} {
+		if redacted, findings := RedactPromptSecrets(value); len(findings) > 0 || redacted != value {
+			return PromptCompletion{}, fmt.Errorf("hop: refusing to persist an unredacted credential in completion %s", name)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PromptCompletion{}, fmt.Errorf("begin prompt completion: %w", err)
+	}
+	defer tx.Rollback()
+	state, err := stateTx(ctx, tx, completion.StateID)
+	if err != nil {
+		return PromptCompletion{}, err
+	}
+	if state.Kind != StatePrompt {
+		return PromptCompletion{}, fmt.Errorf("state %s is %s, not a prompt", state.ID, state.Kind)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO prompt_completions(prompt_state_id, summary, final_response, completed_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(prompt_state_id) DO UPDATE SET
+			summary = excluded.summary,
+			final_response = excluded.final_response,
+			completed_at = excluded.completed_at`,
+		completion.StateID, completion.Summary, completion.FinalResponse, formatTime(completion.CompletedAt)); err != nil {
+		return PromptCompletion{}, fmt.Errorf("record prompt completion: %w", err)
+	}
+	if err := insertEventTx(ctx, tx, Event{
+		Kind: "prompt.completed", TaskID: state.TaskID, AttemptID: state.AttemptID,
+		StateID: state.ID, CreatedAt: completion.CompletedAt,
+	}, map[string]string{"summary": completion.Summary}); err != nil {
+		return PromptCompletion{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PromptCompletion{}, fmt.Errorf("commit prompt completion: %w", err)
+	}
+	return completion, nil
+}
+
+// PromptCompletions returns completion data keyed by prompt state ID.
+func (s *Store) PromptCompletions(ctx context.Context) (map[string]PromptCompletion, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT prompt_state_id, summary, final_response, completed_at
+		FROM prompt_completions ORDER BY completed_at, prompt_state_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query prompt completions: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]PromptCompletion)
+	for rows.Next() {
+		var completion PromptCompletion
+		var completedAt string
+		if err := rows.Scan(&completion.StateID, &completion.Summary, &completion.FinalResponse, &completedAt); err != nil {
+			return nil, fmt.Errorf("scan prompt completion: %w", err)
+		}
+		completion.CompletedAt, err = parseTime(completedAt)
+		if err != nil {
+			return nil, err
+		}
+		result[completion.StateID] = completion
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate prompt completions: %w", err)
+	}
+	return result, nil
 }
 
 // PromptSyncReceipts returns content-free acknowledgements for one private

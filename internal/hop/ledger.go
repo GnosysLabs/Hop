@@ -27,6 +27,7 @@ type PortablePromptRecord struct {
 	AgentName       string                 `json:"agent_name,omitempty"`
 	Status          string                 `json:"status"`
 	ResponseSummary string                 `json:"response_summary,omitempty"`
+	FinalResponse   string                 `json:"final_response,omitempty"`
 	CreatedAt       time.Time              `json:"created_at"`
 	SourceUpdatedAt time.Time              `json:"source_updated_at"`
 	Revision        string                 `json:"revision"`
@@ -56,7 +57,7 @@ type suppressedPromptManifest struct {
 // ExportPromptLedger writes local prompt files beneath .hop/records/prompts.
 // Passing attemptIDs restricts the export to those attempts.
 func (s *Service) ExportPromptLedger(ctx context.Context, destinationRoot string, attemptIDs ...string) (PortablePromptLedger, error) {
-	return s.exportPromptLedger(ctx, destinationRoot, promptExportOptions{AttemptIDs: attemptIDs, PublishableOnly: true})
+	return s.exportPromptLedger(ctx, destinationRoot, promptExportOptions{AttemptIDs: attemptIDs, PublishableOnly: true, Overwrite: true})
 }
 
 func (s *Service) exportPromptLedger(ctx context.Context, destinationRoot string, options promptExportOptions) (PortablePromptLedger, error) {
@@ -126,6 +127,10 @@ func (s *Service) buildPromptLedger(ctx context.Context, suppressionRoot string,
 	if err != nil {
 		return PortablePromptLedger{}, nil, err
 	}
+	completions, err := s.Store.PromptCompletions(ctx)
+	if err != nil {
+		return PortablePromptLedger{}, nil, err
+	}
 	suppressed, err := loadSuppressedPromptIDs(suppressionRoot)
 	if err != nil {
 		return PortablePromptLedger{}, nil, err
@@ -178,7 +183,8 @@ func (s *Service) buildPromptLedger(ctx context.Context, suppressionRoot string,
 				return PortablePromptLedger{}, nil, fmt.Errorf("read attempt head for prompt %s: %w", state.ID, err)
 			}
 		}
-		if options.PublishableOnly && head.Kind != StateProposal && head.Kind != StateAccepted {
+		completion, completed := completions[state.ID]
+		if options.PublishableOnly && !completed && head.Kind != StateProposal && head.Kind != StateAccepted {
 			continue
 		}
 
@@ -202,7 +208,15 @@ func (s *Service) buildPromptLedger(ctx context.Context, suppressionRoot string,
 		if head.CreatedAt.After(record.SourceUpdatedAt) {
 			record.SourceUpdatedAt = head.CreatedAt
 		}
-		if lastPromptByAttempt[state.AttemptID] == state.ID {
+		if completed {
+			record.Status = "completed"
+			record.ResponseSummary = completion.Summary
+			record.FinalResponse = completion.FinalResponse
+			record.CompletedAt = &completion.CompletedAt
+			if completion.CompletedAt.After(record.SourceUpdatedAt) {
+				record.SourceUpdatedAt = completion.CompletedAt
+			}
+		} else if lastPromptByAttempt[state.AttemptID] == state.ID {
 			record.ResponseSummary = head.Summary
 			if options.ResponseSummary != "" {
 				record.ResponseSummary = options.ResponseSummary
@@ -211,7 +225,7 @@ func (s *Service) buildPromptLedger(ctx context.Context, suppressionRoot string,
 		if options.Status != "" {
 			record.Status = options.Status
 		}
-		if head.Kind == StateAccepted || head.Kind == StateFailed || head.Kind == StateCancelled {
+		if !completed && (head.Kind == StateAccepted || head.Kind == StateFailed || head.Kind == StateCancelled) {
 			completedAt := head.CreatedAt
 			record.CompletedAt = &completedAt
 		}

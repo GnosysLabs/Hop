@@ -33,6 +33,19 @@ hop propose --summary "Implemented the requested behavior" P_...
 hop land R_... -- go test ./...
 ```
 
+Immediately before the agent sends its final response, it records both the
+concise summary and the exact response text:
+
+```sh
+hop complete --summary "Implemented the requested behavior" --heredoc P_... <<'HOP_FINAL_EOF'
+Implemented the requested behavior and verified the test suite.
+HOP_FINAL_EOF
+```
+
+The response sent to the user must exactly match the heredoc body. Completion
+also applies to read-only diagnostics and external operations that do not
+produce a proposal.
+
 No second landing authorization is requested unless the user explicitly asks
 for review-first behavior. After acceptance, Hop automatically pushes the
 accepted commit when the repository has an unambiguous upstream. The agent does

@@ -639,6 +639,35 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 	return result, nil
 }
 
+// CompletePrompt records the exact user-visible response for one prompt and
+// immediately attempts private sync. Completion is independent of Git state,
+// so read-only and external-operation turns are represented correctly.
+func (s *Service) CompletePrompt(ctx context.Context, stateID, summary, finalResponse string) (CompletionResult, error) {
+	if len(summary) > 1<<20 {
+		return CompletionResult{}, errors.New("completion summary exceeds 1 MiB")
+	}
+	if len(finalResponse) > 16<<20 {
+		return CompletionResult{}, errors.New("final response exceeds 16 MiB")
+	}
+	summary, _ = RedactPromptSecrets(summary)
+	finalResponse, _ = RedactPromptSecrets(finalResponse)
+	completion, err := s.Store.PutPromptCompletion(ctx, PromptCompletion{
+		StateID: stateID, Summary: summary, FinalResponse: finalResponse, CompletedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return CompletionResult{}, err
+	}
+	result := CompletionResult{Completion: completion}
+	promptSync, syncErr := s.SyncPromptHistory(ctx)
+	if syncErr == nil {
+		result.PromptSync = promptSync
+	} else if !errors.Is(syncErr, ErrNotAuthenticated) {
+		message, _ := RedactPromptSecrets(syncErr.Error())
+		result.Warnings = append(result.Warnings, "completion is stored locally; cloud sync failed: "+message)
+	}
+	return result, nil
+}
+
 // Accept advances Hop's internal accepted lineage without changing the visible
 // project root. Controllers use this lower-level operation deliberately.
 func (s *Service) Accept(ctx context.Context, proposalID string, checkCommand []string) (AcceptResult, error) {

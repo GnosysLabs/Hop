@@ -266,6 +266,36 @@ func TestExportOmitsActiveInternalAttempt(t *testing.T) {
 	}
 }
 
+func TestCompletePromptExportsSummaryAndFinalResponseWithoutProposal(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Inspect an external service", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.CompletePrompt(ctx, started.Prompt.ID, "Service is healthy", "The service is healthy.\n\nNo repository changes were required.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Completion.StateID != started.Prompt.ID {
+		t.Fatalf("completion = %#v", result.Completion)
+	}
+	ledger, err := service.ExportPromptLedger(ctx, service.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Prompts) != 1 {
+		t.Fatalf("exported prompts = %#v", ledger.Prompts)
+	}
+	record := ledger.Prompts[0]
+	if record.Status != "completed" || record.ResponseSummary != result.Completion.Summary || record.FinalResponse != result.Completion.FinalResponse || record.CompletedAt == nil {
+		t.Fatalf("completed portable prompt = %#v", record)
+	}
+	if record.Metadata.AttemptHeadKind != string(StatePrompt) {
+		t.Fatalf("read-only completion changed state graph: %#v", record.Metadata)
+	}
+}
+
 func TestExportRemovesPreviouslyPublishedReconciliationPrompt(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
@@ -392,6 +422,45 @@ func TestCLIJSONWorkflow(t *testing.T) {
 	}
 	if stringField(t, statusData, "root_status") != "synchronized" {
 		t.Fatalf("root status = %q", stringField(t, statusData, "root_status"))
+	}
+}
+
+func TestCLICompleteRecordsExactFinalResponse(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	runCLIJSONTest(t, []string{"init", "--json"})
+	started := runCLIJSONTest(t, []string{"begin", "--agent", "codex", "--json", "Check the service"})
+	promptID := stringField(t, objectField(t, objectField(t, started, "data"), "prompt"), "id")
+	finalResponse := "The service is healthy.\n\n- Database: healthy\n- API: healthy"
+	completed := runCLIJSONInputTest(t,
+		[]string{"complete", "--summary", "Service checks pass", "--heredoc", "--json", promptID},
+		finalResponse+"\n")
+	completion := objectField(t, objectField(t, completed, "data"), "completion")
+	if stringField(t, completion, "state_id") != promptID || stringField(t, completion, "summary") != "Service checks pass" || stringField(t, completion, "final_response") != finalResponse {
+		t.Fatalf("completion = %#v", completion)
+	}
+
+	runCLIJSONTest(t, []string{"export", "--output", ".", "--json"})
+	contents, err := os.ReadFile(filepath.Join(root, ".hop", "records", "prompts", promptID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record PortablePromptRecord
+	if err := json.Unmarshal(contents, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.ResponseSummary != "Service checks pass" || record.FinalResponse != finalResponse {
+		t.Fatalf("exported completion = %#v", record)
 	}
 }
 

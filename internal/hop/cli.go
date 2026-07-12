@@ -31,6 +31,7 @@ Usage:
   hop checkpoint STATE
   hop check STATE -- COMMAND [ARG...]
   hop propose [--summary TEXT] STATE
+  hop complete --summary TEXT (--stdin | --heredoc) PROMPT
   hop accept STATE [-- COMMAND [ARG...]]
   hop land STATE [-- COMMAND [ARG...]]
   hop refresh PROPOSAL
@@ -321,6 +322,37 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		value = result
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Created proposal %s · tree %s · %d matching checks\n", result.Proposal.ID, shortHash(result.Proposal.SourceTree), len(result.Checks))
+			printPromptSync(stdout, result.PromptSync)
+			for _, warning := range result.Warnings {
+				fmt.Fprintf(stderr, "Warning: %s\n", warning)
+			}
+		}
+
+	case "complete":
+		fs := flag.NewFlagSet("complete", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		summary := fs.String("summary", "", "concise response summary")
+		rawStdin := fs.Bool("stdin", false, "read the exact final response from stdin")
+		heredoc := fs.Bool("heredoc", false, "read the exact final response from stdin and remove one shell-added final newline")
+		if err := fs.Parse(commandArgs); err != nil {
+			return 2
+		}
+		if len(fs.Args()) != 1 || strings.TrimSpace(*summary) == "" || (!*rawStdin && !*heredoc) {
+			fmt.Fprintln(stderr, "usage: hop complete --summary TEXT (--stdin | --heredoc) PROMPT")
+			return 2
+		}
+		finalResponse, err := promptMessage(stdin, nil, *rawStdin, *heredoc)
+		if err != nil {
+			fmt.Fprintf(stderr, "hop complete: %v\n", err)
+			return 2
+		}
+		result, err := service.CompletePrompt(ctx, fs.Args()[0], *summary, finalResponse)
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		value = result
+		if !jsonOutput {
+			fmt.Fprintf(stdout, "Recorded completion for %s\n", result.Completion.StateID)
 			printPromptSync(stdout, result.PromptSync)
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(stderr, "Warning: %s\n", warning)

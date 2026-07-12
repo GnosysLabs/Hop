@@ -96,6 +96,13 @@ func TestPromptCloudSyncUsesAuthenticatedRepositoryAndRedactedPortableRecords(t 
 	if err != nil {
 		t.Fatal(err)
 	}
+	completion, err := service.Store.PutPromptCompletion(ctx, PromptCompletion{
+		StateID: started.Prompt.ID, Summary: "Implemented and tested",
+		FinalResponse: "Implemented the private feature.\n\nAll tests pass.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	auth := &AuthClient{
 		HTTP:        server.Client(),
@@ -151,6 +158,9 @@ func TestPromptCloudSyncUsesAuthenticatedRepositoryAndRedactedPortableRecords(t 
 	if strings.Contains(string(encoded), secret) || !strings.Contains(request.Prompts[0].Prompt, redactedMarkerPrefix) {
 		t.Fatalf("prompt sync did not redact credential: %s", encoded)
 	}
+	if request.Prompts[0].ResponseSummary != completion.Summary || request.Prompts[0].FinalResponse != completion.FinalResponse {
+		t.Fatalf("prompt sync omitted completion: %#v", request.Prompts[0])
+	}
 }
 
 func TestRedactPortablePromptRecordCoversSummaryAndAgent(t *testing.T) {
@@ -159,6 +169,7 @@ func TestRedactPortablePromptRecordCoversSummaryAndAgent(t *testing.T) {
 		Prompt:          "prompt " + secret,
 		AgentName:       "agent " + secret,
 		ResponseSummary: "summary " + secret,
+		FinalResponse:   "final " + secret,
 	}
 	redacted := redactPortablePromptRecord(record)
 	encoded, err := json.Marshal(redacted)

@@ -156,6 +156,22 @@ type ProposalResult struct {
 	Warnings   []string          `json:"warnings,omitempty"`
 }
 
+// PromptCompletion records the user-visible answer produced for one prompt.
+// It is separate from the immutable Git state graph because read-only and
+// external-operation turns can complete without creating a proposal.
+type PromptCompletion struct {
+	StateID       string    `json:"state_id"`
+	Summary       string    `json:"summary"`
+	FinalResponse string    `json:"final_response"`
+	CompletedAt   time.Time `json:"completed_at"`
+}
+
+type CompletionResult struct {
+	Completion PromptCompletion  `json:"completion"`
+	PromptSync *PromptSyncResult `json:"prompt_sync,omitempty"`
+	Warnings   []string          `json:"warnings,omitempty"`
+}
+
 type PromptRepository struct {
 	Owner string `json:"owner"`
 	Name  string `json:"name"`

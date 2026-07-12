@@ -71,6 +71,11 @@ pinning, custom locations, and verification, see the
 That is the full user workflow. You do not run `hop init`, route prompts through
 a terminal, or work inside `.hop` yourself. After a task, `hop status` shows the
 accepted state and whether the visible project folder is synchronized.
+
+Before an interactive agent returns its answer, `hop complete` records the
+concise outcome and exact final response against that prompt. This works for
+code changes, read-only diagnostics, and external operations alike, and makes
+both fields available to private prompt-history sync.
 When the repository has an unambiguous Git upstream, Hop also pushes the
 accepted commit automatically; users do not run `git push` after each task.
 

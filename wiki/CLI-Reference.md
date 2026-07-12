@@ -23,6 +23,7 @@ release.
 | `hop checkpoint STATE` | Freeze current attempt progress |
 | `hop check STATE -- COMMAND...` | Validate an immutable checkpoint |
 | `hop propose [--summary TEXT] STATE` | Freeze a candidate proposal |
+| `hop complete --summary TEXT (--stdin \| --heredoc) PROMPT` | Record the summary and exact final response for a prompt |
 | `hop land PROPOSAL [-- COMMAND...]` | Accept and synchronize the visible root |
 | `hop refresh PROPOSAL` | Explicitly prepare/reuse conflict reconciliation |
 

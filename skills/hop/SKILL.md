@@ -211,8 +211,29 @@ mechanism; never call a token-management endpoint.
    push warning, retry once with `hop push`; never force-push or ask the user to
    perform routine source-control mechanics.
 
-For a read-only or informational turn, the prompt state is sufficient; do not
-invent a proposal when the workspace tree is unchanged.
+9. Before sending the final response, compose its exact text and durably record
+   it against the current prompt state:
+
+   ```bash
+   hop complete --summary "<concise outcome>" --heredoc <HOP_STATE_ID> <<'HOP_FINAL_EOF'
+   <exact final response that will be sent to the user>
+   HOP_FINAL_EOF
+   ```
+
+   Use the current turn's prompt `HOP_STATE_ID`, not a proposal or accepted
+   state. The summary and final response are both private prompt-history data
+   and are sanitized before persistence. `hop complete` immediately attempts
+   authenticated private sync; a sync warning leaves the completion durable
+   locally for retry by `hop sync`.
+
+10. Send exactly the same response in the final channel immediately after the
+    completion command. Do not run another tool or send commentary between
+    `hop complete` and the final response. This last-step ordering ensures the
+    user-visible response and prompt history cannot silently diverge.
+
+For a read-only, informational, or external-operation turn, do not invent a
+proposal when the workspace tree is unchanged. Still run `hop complete` so the
+prompt receives its summary and exact final response.
 
 Do not edit a frozen proposal. A user follow-up triggers this skill again;
 run `hop begin` again before acting. Session binding selects unfinished work

@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	maxPromptSyncBatchRecords = 50
-	maxPromptSyncBatchBytes   = 100 << 20
-	maxPromptSyncRawPrompt    = 16 << 20
+	maxPromptSyncBatchRecords  = 50
+	maxPromptSyncBatchBytes    = 100 << 20
+	maxPromptSyncRawPrompt     = 16 << 20
+	maxPromptSyncFinalResponse = 16 << 20
 )
 
 type promptSyncRequest struct {
@@ -103,6 +104,10 @@ func (s *Service) syncPromptHistory(ctx context.Context, auth *AuthClient) (*Pro
 		record := redactPortablePromptRecord(source)
 		if len(record.Prompt) > maxPromptSyncRawPrompt {
 			rejected = append(rejected, record.StateID+": prompt exceeds 16 MiB")
+			continue
+		}
+		if len(record.FinalResponse) > maxPromptSyncFinalResponse {
+			rejected = append(rejected, record.StateID+": final response exceeds 16 MiB")
 			continue
 		}
 		record.Revision, err = portablePromptRevision(record)
@@ -263,6 +268,7 @@ func redactPortablePromptRecord(record PortablePromptRecord) PortablePromptRecor
 	record.Prompt, _ = RedactPromptSecrets(record.Prompt)
 	record.AgentName, _ = RedactPromptSecrets(record.AgentName)
 	record.ResponseSummary, _ = RedactPromptSecrets(record.ResponseSummary)
+	record.FinalResponse, _ = RedactPromptSecrets(record.FinalResponse)
 	record.Metadata.SourceTree, _ = RedactPromptSecrets(record.Metadata.SourceTree)
 	record.Metadata.GitCommit, _ = RedactPromptSecrets(record.Metadata.GitCommit)
 	record.Metadata.AttemptHead, _ = RedactPromptSecrets(record.Metadata.AttemptHead)

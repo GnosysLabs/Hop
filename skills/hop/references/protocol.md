@@ -90,6 +90,7 @@ hop status --json
 hop check "$HOP_STATE_ID" -- <command>
 hop propose --summary "<summary>" "$HOP_STATE_ID"
 hop land <proposal-state> -- <final validation command>
+hop complete --summary "<summary>" --heredoc "$HOP_STATE_ID"
 hop refresh <proposal-state>
 hop push
 ```
@@ -102,6 +103,14 @@ every `hop begin`. Codex normally needs neither explicit flag because
 `hop check` snapshots the attempt and runs the command in a detached worktree materialized from that exact checkpoint. Edits made concurrently in the live workspace do not change the tested tree.
 
 `hop propose` freezes the current nonignored workspace tree. Later workspace edits cannot change the proposal.
+
+`hop complete` records the concise summary and exact user-visible final response
+for the current prompt state. Completion is deliberately separate from the Git
+state graph: read-only diagnostics, deployments, and other external operations
+can finish without manufacturing a proposal. The command accepts the final
+response through `--stdin` or `--heredoc`, persists it before delivery, and
+immediately attempts private prompt sync. Agents call it as their final tool
+action, then send the identical text to the user without intervening work.
 
 The initial task prompt authorizes the agent to run `hop land` after successful
 validation; a second user approval is not required. Manual review is an opt-in
@@ -243,6 +252,7 @@ provide the same boundary inside compatible agent clients.
 ## Failure handling
 
 - **Missing Hop environment:** run `hop begin` before project work and use the returned state and workspace.
+- **Completion sync warning:** send the already-recorded response, then let a later `hop sync` retry the durable local completion.
 - **Check failure:** fix the live workspace, checkpoint/check again, then create a new proposal.
 - **Review-only request:** preserve and report the proposal without landing it.
 - **Frozen proposal needs changes:** record a follow-up prompt; never mutate the stored proposal.
