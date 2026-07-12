@@ -385,6 +385,9 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		}
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Landed as %s · tree %s\n", result.State.ID, shortHash(result.State.SourceTree))
+			if result.CapturedRoot != nil {
+				fmt.Fprintf(stdout, "Captured concurrent visible-root changes as %s\n", result.CapturedRoot.ID)
+			}
 			fmt.Fprintf(stdout, "Synchronized visible root: %s\n", result.MaterializedRoot)
 			printRemotePush(stdout, result.RemotePush)
 			printPromptSync(stdout, result.PromptSync)

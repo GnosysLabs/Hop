@@ -57,9 +57,12 @@ workspace, and rerun the check.
 
 ## Exit code 23 or `Root: diverged`
 
-Hop found visible files or index state it will not overwrite. Preserve those
-changes. Capture them as a new Hop task or resolve them intentionally, then
-retry `hop land`. Do not bypass this with `hop accept` in interactive workflows.
+Hop found protected staged/index state, ignored content, a conflict with a
+newer accepted projection, or a materialization race. Ordinary nonignored root
+edits are captured automatically by `hop land`, so code `23` now means Hop
+cannot safely infer a worktree-only intent. Preserve the reported paths and
+resolve that protected state intentionally. Do not bypass this with `hop
+accept` in interactive workflows.
 
 ## Internal ref or object warning
 

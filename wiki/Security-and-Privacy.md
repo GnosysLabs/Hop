@@ -68,8 +68,9 @@ revoke provider account tokens.
 ## Filesystem safety
 
 Hop does not use `reset --hard`, move the active branch, or write the user's
-real Git index. Visible-root synchronization fails closed when files, ignored
-destinations, or staged state could be overwritten.
+real Git index. Ordinary nonignored visible-root edits are captured into Hop's
+accepted lineage before merging. Synchronization remains fail-closed for
+ignored destinations, staged/index state, and filesystem races.
 
 Automatic push uses the existing Git transport for other forges. For the forge
 selected by `hop auth login`, Hop stores the OAuth grant only in the OS keychain

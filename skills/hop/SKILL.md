@@ -240,8 +240,9 @@ Stop before acceptance only when:
 - the user explicitly says `review first`, `proposal only`, `do not land`, or
   otherwise asks to approve the result before it is accepted;
 - validation fails;
-- Hop reports visible-root divergence; a conflict has genuine product ambiguity
-  that cannot be resolved from both recorded intents; or
+- Hop reports unsafe staged/index state or an ignored destination collision; a
+  conflict has genuine product ambiguity that cannot be resolved from both
+  recorded intents; or
 - acceptance would require a destructive, external, or out-of-scope action not
   authorized by the captured task.
 
@@ -250,10 +251,14 @@ three-way content merge; genuine unresolved hunks enter the automatic
 reconciliation loop above. Preserve and report a block only when the intents
 are product-level incompatible, required validation cannot be repaired, or
 safe continuation needs new user authority.
-If visible-root synchronization is blocked, do not bypass it with `hop accept`,
-force checkout, reset, or file copying. Preserve the proposal and identify the
-user-owned paths that must be resolved. `hop accept` is reserved for an
-explicitly controller-only workflow; interactive agent work uses `hop land`.
+Ordinary nonignored visible-root edits are captured by `hop land` as an
+explicit accepted transition and then merged like any other concurrent work.
+Continue through any returned reconciliation workspace. If visible-root
+synchronization is instead blocked by staged/index state, ignored content, or
+a race, do not bypass it with `hop accept`, force checkout, reset, or file
+copying. Preserve the proposal and identify the protected paths. `hop accept`
+is reserved for an explicitly controller-only workflow; interactive agent work
+uses `hop land`.
 Use `hop undo` only after a separately captured, explicit user request.
 
 Read [references/protocol.md](references/protocol.md) for state semantics, exit

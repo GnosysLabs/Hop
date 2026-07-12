@@ -56,9 +56,11 @@ state but intentionally leaves the visible folder unchanged.
 ## Visible root
 
 The visible root is the project directory selected in an agent client or passed
-as the controller's working directory. Hop only materializes into it when it
-still matches an accepted Hop ancestor. Untracked, ignored, staged, or ordinary
-file divergence that could be overwritten causes a fail-closed error.
+as the controller's working directory. During `hop land`, Hop captures ordinary
+nonignored edits there as a labeled accepted transition, then merges them with
+the proposal through the normal three-way reconciliation flow. The real Git
+index, ignored content, and changes racing with materialization remain
+fail-closed so Hop never silently changes staging intent or private files.
 
 ## Automatic upstream push
 

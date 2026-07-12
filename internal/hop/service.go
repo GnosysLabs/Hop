@@ -718,6 +718,12 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	} else if exists {
 		result := AcceptResult{State: existing}
 		if materialize {
+			captured, paths, captureErr := s.captureVisibleRoot(ctx)
+			if captureErr != nil {
+				return result, captureErr
+			}
+			result.CapturedRoot = captured
+			result.CapturedRootPaths = paths
 			if _, err := s.syncLocked(ctx); err != nil {
 				return result, &CommittedStateError{State: existing, Err: fmt.Errorf("repair visible root after prior acceptance: %w", err)}
 			}
@@ -735,6 +741,16 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		return AcceptResult{}, &HeadChangedError{
 			Scope: "attempt", Expected: proposal.ID, Actual: attempt.HeadStateID,
 		}
+	}
+	var capturedRoot *State
+	var capturedRootPaths []string
+	if materialize {
+		captured, paths, captureErr := s.captureVisibleRoot(ctx)
+		if captureErr != nil {
+			return AcceptResult{}, captureErr
+		}
+		capturedRoot = captured
+		capturedRootPaths = paths
 	}
 	baseStateID := proposal.CanonicalAnchorID
 	if baseStateID == "" {
@@ -926,11 +942,13 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		warnings = append(warnings, "accepted state is durable in SQLite but refs/hop/accepted needs repair: "+err.Error())
 	}
 	result := AcceptResult{
-		State:         accepted,
-		ProposalPaths: proposalPaths,
-		CurrentPaths:  currentPaths,
-		Check:         recordedCheck,
-		Warnings:      warnings,
+		State:             accepted,
+		CapturedRoot:      capturedRoot,
+		CapturedRootPaths: capturedRootPaths,
+		ProposalPaths:     proposalPaths,
+		CurrentPaths:      currentPaths,
+		Check:             recordedCheck,
+		Warnings:          warnings,
 	}
 	if materialize {
 		if err := s.Repo.MaterializeTree(ctx, rootBase.SourceTree, accepted.SourceTree); err != nil {
@@ -944,6 +962,99 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	s.attachAutomaticPush(ctx, &result)
 	s.attachPromptCloudSync(ctx, &result.PromptSync, &result.Warnings)
 	return result, nil
+}
+
+// captureVisibleRoot promotes ordinary nonignored worktree edits into an
+// explicit accepted transition before landing another proposal. That makes
+// out-of-band work a normal concurrent input to Hop's existing three-way merge
+// and reconciliation flow instead of forcing an agent to wait for a human.
+//
+// The real Git index and ignored-file collisions remain fail-closed. When the
+// accepted head is newer than the projected root, compatible edits are first
+// composed with that accepted advancement; genuine conflicts still require a
+// deliberate reconciliation rather than guessing which intent wins.
+func (s *Service) captureVisibleRoot(ctx context.Context) (*State, []string, error) {
+	materialized, err := s.Store.MaterializedHead(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.Repo.CheckIndexSafe(ctx, materialized.SourceTree); err != nil {
+		return nil, nil, err
+	}
+	actualTree, err := s.Repo.WorktreeTree(ctx, materialized.SourceTree)
+	if err != nil {
+		return nil, nil, err
+	}
+	if actualTree == materialized.SourceTree {
+		return nil, nil, nil
+	}
+	paths, err := s.Repo.ChangedPaths(ctx, materialized.SourceTree, actualTree)
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := s.Store.AcceptedHead(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rootCommit, err := s.Repo.CommitTree(ctx, actualTree, []string{materialized.GitCommit}, "Hop visible-root snapshot\n")
+	if err != nil {
+		return nil, nil, err
+	}
+	finalTree := actualTree
+	if current.ID != materialized.ID {
+		var conflicts []string
+		finalTree, conflicts, err = s.Repo.ComposeTrees(ctx, materialized.GitCommit, current.GitCommit, rootCommit)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(conflicts) > 0 {
+			return nil, nil, &RootConflictError{
+				Paths:  conflicts,
+				Reason: "visible project root changes conflict with a newer accepted state",
+			}
+		}
+	}
+
+	capturedID := newID("a")
+	commit, err := s.Repo.CommitTree(ctx, finalTree, []string{current.GitCommit}, fmt.Sprintf(
+		"Capture visible project changes\n\nHop-State: %s\nHop-Captured-From: %s\n", capturedID, materialized.ID))
+	if err != nil {
+		return nil, nil, err
+	}
+	parents := canonicalizeParents([]Parent{{StateID: current.ID, Role: "canonical_parent", Order: 0}})
+	captured := State{
+		ID:                capturedID,
+		Kind:              StateAccepted,
+		CanonicalAnchorID: current.ID,
+		SourceTree:        finalTree,
+		GitCommit:         commit,
+		Summary:           "Capture out-of-band visible project changes",
+		Agent:             "hop",
+		CreatedAt:         time.Now().UTC(),
+		Parents:           parents,
+	}
+	captured.Digest, err = digestState(captured, parents)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.pinState(ctx, captured); err != nil {
+		return nil, nil, err
+	}
+	captured, err = s.Store.CASAccept(ctx, current.ID, captured, parents)
+	if err != nil {
+		return nil, nil, mapHeadError(err)
+	}
+	if err := s.Repo.UpdateHiddenRef(ctx, acceptedRef, captured.GitCommit); err != nil {
+		return &captured, paths, &CommittedStateError{State: captured, Err: fmt.Errorf("repair refs/hop/accepted: %w", err)}
+	}
+	if err := s.Repo.MaterializeTree(ctx, actualTree, captured.SourceTree); err != nil {
+		return &captured, paths, &CommittedStateError{State: captured, Err: fmt.Errorf("synchronize captured visible root: %w", err)}
+	}
+	if err := s.Store.CASMaterializedHead(ctx, materialized.ID, captured.ID); err != nil {
+		return &captured, paths, &CommittedStateError{State: captured, Err: fmt.Errorf("record captured visible root: %w", err)}
+	}
+	return &captured, paths, nil
 }
 
 func withoutPortableHopRecords(paths []string) []string {

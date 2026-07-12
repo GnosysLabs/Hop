@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -313,6 +314,7 @@ func TestProposeRespectsSuppressedPromptManifest(t *testing.T) {
 }
 
 func TestOpenProjectWaitsForInitializationLock(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
 	root := service.Root
 	if err := service.Close(); err != nil {
@@ -1824,9 +1826,9 @@ func TestAcceptLeavesVisibleRootStaleUntilSync(t *testing.T) {
 	}
 }
 
-func TestLandBlocksDivergedVisibleRootBeforeAcceptance(t *testing.T) {
+func TestLandCapturesDivergedVisibleRootAndMergesProposal(t *testing.T) {
 	ctx := context.Background()
-	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
 	started, err := service.CreatePrompt(ctx, "Add landed file", "", "agent")
 	if err != nil {
 		t.Fatal(err)
@@ -1837,31 +1839,68 @@ func TestLandBlocksDivergedVisibleRootBeforeAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(service.Root, "local.txt"), "do not overwrite\n")
-	beforeRef, exists, err := service.Repo.ReadHiddenRef(ctx, acceptedRef)
-	if err != nil || !exists {
-		t.Fatalf("read accepted ref: exists=%v err=%v", exists, err)
-	}
-	_, err = service.Land(ctx, proposal.Proposal.ID, nil)
-	var conflict *RootConflictError
-	if !errors.As(err, &conflict) {
-		t.Fatalf("land error = %v, want RootConflictError", err)
-	}
-	head, err := service.Store.AcceptedHead(ctx)
+	landed, err := service.Land(ctx, proposal.Proposal.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if head.ID != initial.ID {
-		t.Fatalf("blocked land moved accepted head to %s", head.ID)
+	if landed.CapturedRoot == nil || landed.CapturedRoot.Summary != "Capture out-of-band visible project changes" {
+		t.Fatalf("captured root = %#v", landed.CapturedRoot)
 	}
-	afterRef, _, err := service.Repo.ReadHiddenRef(ctx, acceptedRef)
-	if err != nil || afterRef != beforeRef {
-		t.Fatalf("accepted ref changed from %s to %s: %v", beforeRef, afterRef, err)
+	if !slices.Equal(landed.CapturedRootPaths, []string{"local.txt"}) {
+		t.Fatalf("captured root paths = %v", landed.CapturedRootPaths)
 	}
 	if contents, err := os.ReadFile(filepath.Join(service.Root, "local.txt")); err != nil || string(contents) != "do not overwrite\n" {
 		t.Fatalf("local file changed: %q, %v", string(contents), err)
 	}
-	if _, err := os.Stat(filepath.Join(service.Root, "landed.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("blocked land materialized proposal: %v", err)
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "landed.txt")); err != nil || string(contents) != "landed\n" {
+		t.Fatalf("landed file = %q, %v", string(contents), err)
+	}
+	status, err := service.Status(ctx)
+	if err != nil || status.RootStatus != "synchronized" || status.AcceptedHead.ID != landed.State.ID {
+		t.Fatalf("status = %#v, err=%v", status, err)
+	}
+}
+
+func TestLandTurnsConflictingVisibleRootChangesIntoAgentReconciliation(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Edit shared file", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "shared.txt"), "proposal\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Proposal edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(service.Root, "shared.txt"), "visible root\n")
+
+	_, err = service.Land(ctx, proposal.Proposal.ID, nil)
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("land error = %v, want ConflictError", err)
+	}
+	head, err := service.Store.AcceptedHead(ctx)
+	if err != nil || head.Summary != "Capture out-of-band visible project changes" {
+		t.Fatalf("accepted head = %#v, err=%v", head, err)
+	}
+	refresh, err := service.Refresh(ctx, proposal.Proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(refresh.Workspace, "shared.txt"), "visible root + proposal\n")
+	if _, err := service.RunCheck(ctx, refresh.Prompt.ID, []string{"sh", "-c", "test \"$(cat shared.txt)\" = \"visible root + proposal\""}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := service.Propose(ctx, refresh.Prompt.ID, "Reconcile visible root and proposal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, resolved.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "shared.txt")); err != nil || string(contents) != "visible root + proposal\n" {
+		t.Fatalf("shared file = %q, %v", string(contents), err)
 	}
 }
 

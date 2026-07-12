@@ -45,5 +45,7 @@ not user work.
 ## Visible-root safety
 
 The selected project directory remains at the last accepted state while
-reconciliation is underway. If that folder has user-owned divergence, Hop does
-not overwrite it; `hop land` exits with code `23` and reports the paths.
+reconciliation is underway. If it has ordinary nonignored edits when landing
+resumes, Hop captures them as a labeled accepted transition and merges them
+with the proposal. Protected staged/index state, ignored collisions, and
+materialization races still exit with code `23` rather than being overwritten.

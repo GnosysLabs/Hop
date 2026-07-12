@@ -81,14 +81,16 @@ type Status struct {
 }
 
 type AcceptResult struct {
-	State            State             `json:"state"`
-	ProposalPaths    []string          `json:"proposal_paths"`
-	CurrentPaths     []string          `json:"current_paths"`
-	Check            *Check            `json:"check,omitempty"`
-	MaterializedRoot string            `json:"materialized_root,omitempty"`
-	RemotePush       *RemotePushResult `json:"remote_push,omitempty"`
-	PromptSync       *PromptSyncResult `json:"prompt_sync,omitempty"`
-	Warnings         []string          `json:"warnings,omitempty"`
+	State             State             `json:"state"`
+	CapturedRoot      *State            `json:"captured_root,omitempty"`
+	CapturedRootPaths []string          `json:"captured_root_paths,omitempty"`
+	ProposalPaths     []string          `json:"proposal_paths"`
+	CurrentPaths      []string          `json:"current_paths"`
+	Check             *Check            `json:"check,omitempty"`
+	MaterializedRoot  string            `json:"materialized_root,omitempty"`
+	RemotePush        *RemotePushResult `json:"remote_push,omitempty"`
+	PromptSync        *PromptSyncResult `json:"prompt_sync,omitempty"`
+	Warnings          []string          `json:"warnings,omitempty"`
 }
 
 type RemotePushResult struct {

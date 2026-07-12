@@ -106,18 +106,21 @@ every `hop begin`. Codex normally needs neither explicit flag because
 The initial task prompt authorizes the agent to run `hop land` after successful
 validation; a second user approval is not required. Manual review is an opt-in
 mode: stop at the proposal only when the user explicitly asks to review or
-approve before acceptance. Validation failure, visible-root divergence,
-unresolved product ambiguity, or newly required destructive/external scope
-stops automatic acceptance. Path overlap and a stale accepted head do not:
-Hop merges, retries, or prepares agent reconciliation.
+approve before acceptance. Validation failure, protected staged/index state or
+ignored-root collisions, unresolved product ambiguity, or newly required
+destructive/external scope stops automatic acceptance. Path overlap, ordinary
+nonignored root edits, and a stale accepted head do not: Hop captures, merges,
+retries, or prepares agent reconciliation.
 
 `hop land` is the interactive working-root operation. It performs a real Git
 three-way content merge, so compatible edits in the same file and identical
 changes compose automatically. It validates and advances accepted state, then
-safely materializes that tree into the selected visible project root. The root
-must still match an accepted Hop ancestor, and ignored or untracked destination
-collisions block before acceptance. Materialization uses a disposable index
-and never moves HEAD, the active branch, or the user's real index.
+safely materializes that tree into the selected visible project root. Ordinary
+nonignored root edits are first captured as an explicit accepted transition,
+then merged against the proposal; genuine overlaps enter the same agent
+reconciliation flow. Staged/index state and ignored destination collisions
+remain protected. Materialization uses a disposable index and never moves HEAD,
+the active branch, or the user's real index.
 
 When the three-way merge has genuine unresolved conflicts, `hop land` returns
 exit `20` and automatically prepares a reconciliation prompt in the original
@@ -247,7 +250,7 @@ provide the same boundary inside compatible agent clients.
   reconciliation prompt/workspace; inspect both inputs, resolve textual and
   structural conflicts, validate, propose, and land again. Stop only for
   product ambiguity, not ordinary textual overlap.
-- **Visible-root conflict:** preserve the proposal and the user's files. Do not substitute controller-only `hop accept`; resolve or capture the visible changes, then land again.
+- **Visible-root edits:** `hop land` captures ordinary nonignored edits and merges them automatically. Continue through any returned reconciliation. For protected staged/index state or ignored collisions, preserve the proposal and user files; never substitute controller-only `hop accept`.
 - **Controller-accepted root is stale:** run `hop sync`; it succeeds only from an accepted ancestor and never overwrites divergence.
 - **Automatic push warning:** retry once with `hop push`; preserve a diverged remote and never force-push it.
 - **Ref inconsistency:** run `hop doctor`; use `hop doctor --repair` only outside final validation.
