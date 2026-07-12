@@ -94,6 +94,12 @@ request work, releases, and other same-forge API operations. `hop repo create`,
 `hop forge api`, and `hop auth exec` let agents perform that work without asking
 for a personal access token or opening a second Gitea login session.
 
+Hop also exposes the full Gitea collaboration command surface directly from the
+same binary and OAuth session. Commands such as `hop clone OWNER/REPO`,
+`hop issues`, `hop pulls`, `hop repos`, `hop releases`, `hop actions`, and
+`hop wiki` require neither Tea nor a separate Tea login. Run
+`hop COMMAND --help` for each command family's subcommands and flags.
+
 For example, Codex Desktop users restart Codex after installation, select a Git
 project, and prompt normally. Other compatible runtimes can read the shared
 skill bundle or receive a single-target installation with the explicit

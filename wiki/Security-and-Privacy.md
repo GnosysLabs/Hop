@@ -85,6 +85,12 @@ environment variable. The child receives the credential for its lifetime, so
 agents must use it only for an authorized operation and must never print or
 persist the variable.
 
+Hop's native Gitea collaboration commands embed the open-source Gitea command
+engine in-process. Before invoking it, Hop refreshes the keychain-backed OAuth
+grant and supplies it only through a temporary process environment. The prior
+environment is restored after the command. No Tea executable, Tea configuration,
+or second credential store is used.
+
 ## Reporting a vulnerability
 
 Before the public security contact is configured, disclose vulnerabilities

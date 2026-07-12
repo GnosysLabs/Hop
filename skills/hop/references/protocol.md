@@ -180,6 +180,13 @@ variable. Never print or persist that variable. Hop applies HTTPS OAuth per Git
 operation without changing an SSH-form or HTTPS remote unless the user
 explicitly asks to change the publishing destination.
 
+The Hop binary also provides the Gitea command families `clone`, `whoami`,
+`issues`, `pulls`, `labels`, `milestones`, `releases`, `times`, `organizations`,
+`repos`, `branches`, `actions`, `wiki`, `webhooks`, `comments`, `open`,
+`notifications`, `ssh-keys`, `admin`, `api`, and `man`. They use the current Hop
+OAuth session automatically and require neither a Tea installation nor a Tea
+login/config file.
+
 Do not request or create a personal access token, place a token in a URL or Git
 configuration, or substitute a server-wide credential for a private repository.
 For another forge, a release or publishing task may use only a pre-existing

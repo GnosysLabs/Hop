@@ -58,6 +58,12 @@ type AuthResult struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
+type OAuthSession struct {
+	Forge       string
+	Login       string
+	AccessToken string
+}
+
 type ForgeRepository struct {
 	Name     string `json:"name"`
 	FullName string `json:"full_name"`
@@ -444,18 +450,28 @@ func (c *AuthClient) ForgeAPI(ctx context.Context, method, apiPath string, body 
 // OAuthAccessToken returns a current access token for a deliberately launched
 // child process. Callers must keep it out of argv, output, and durable files.
 func (c *AuthClient) OAuthAccessToken(ctx context.Context) (string, error) {
-	profile, err := c.readProfile()
+	session, err := c.OAuthSession(ctx)
 	if err != nil {
 		return "", err
+	}
+	return session.AccessToken, nil
+}
+
+// OAuthSession returns the current forge identity and a refreshed access token
+// for an in-process authenticated operation.
+func (c *AuthClient) OAuthSession(ctx context.Context) (OAuthSession, error) {
+	profile, err := c.readProfile()
+	if err != nil {
+		return OAuthSession{}, err
 	}
 	credential, err := c.oauthCredential(ctx, profile.Server, false, "")
 	if err != nil {
-		return "", err
+		return OAuthSession{}, err
 	}
 	if credential.OAuthAccessToken == "" {
-		return "", ErrNotAuthenticated
+		return OAuthSession{}, ErrNotAuthenticated
 	}
-	return credential.OAuthAccessToken, nil
+	return OAuthSession{Forge: profile.Server, Login: credential.OAuthLogin, AccessToken: credential.OAuthAccessToken}, nil
 }
 
 func validateForgePathSegment(label, value string) error {

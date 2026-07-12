@@ -95,6 +95,20 @@ hop forge api --method PATCH --data '{"state":"closed"}' \
 Agents should not open another Gitea sign-in page when `hop auth status`
 succeeds.
 
+Hop includes native Gitea collaboration commands backed by that same OAuth
+session. Common examples are:
+
+```bash
+hop clone OWNER/REPOSITORY
+hop issues list --repo OWNER/REPOSITORY
+hop comments add --repo OWNER/REPOSITORY ISSUE_NUMBER "Comment text"
+hop pulls list --repo OWNER/REPOSITORY
+hop releases list --repo OWNER/REPOSITORY
+```
+
+The complete families are listed by `hop help`; each supports
+`hop COMMAND --help`. No Tea binary, Tea configuration, or Tea login is needed.
+
 ## Ask for review before landing
 
 Automatic landing is the default because the original task authorizes the

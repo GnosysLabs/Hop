@@ -94,6 +94,32 @@ only relative `/api/v1/` paths on the authenticated forge. `auth exec` provides
 the current token to one child process through `GITEA_TOKEN` by default and
 redacts it from captured stdout and stderr.
 
+## Native Gitea command families
+
+The same Hop binary embeds the established Gitea collaboration command engine
+behind Hop-native command names:
+
+```text
+clone       whoami       issues       pulls         labels
+milestones  releases     times        organizations repos
+branches    actions      wiki         webhooks      comments
+open        notifications ssh-keys    admin         api       man
+```
+
+Examples:
+
+```bash
+hop clone OWNER/REPOSITORY
+hop issues list --repo OWNER/REPOSITORY --output json
+hop pulls checkout NUMBER
+hop releases create TAG --asset ./dist/archive.tar.gz
+```
+
+These commands automatically receive the current refreshed Hop OAuth session.
+They do not read or create a Tea login. `hop login` and `hop logout` are aliases
+for Hop OAuth authentication, while `hop auth login` and `hop auth logout`
+remain the explicit canonical forms.
+
 ## Exit codes
 
 | Code | Meaning |

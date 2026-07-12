@@ -50,6 +50,11 @@ Usage:
   hop skill print
   hop version
 
+OAuth-authenticated Gitea commands:
+  hop clone, whoami, issues, pulls, labels, milestones, releases, times
+  hop organizations, repos, branches, actions, wiki, webhooks, comments
+  hop open, notifications, ssh-keys, admin, api, man
+
 Add --json anywhere for machine-readable output.
 `
 
@@ -101,6 +106,18 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 	}
 	if command == "forge" {
 		return runForgeCLI(ctx, commandArgs, stdin, jsonOutput, stdout, stderr)
+	}
+	if command == "login" {
+		if len(commandArgs) == 0 {
+			commandArgs = []string{"https://githop.xyz"}
+		}
+		return runAuthCLI(ctx, append([]string{"login"}, commandArgs...), stdin, jsonOutput, stdout, stderr)
+	}
+	if command == "logout" {
+		return runAuthCLI(ctx, []string{"logout"}, stdin, jsonOutput, stdout, stderr)
+	}
+	if isTeaCompatibleCommand(command) {
+		return runTeaCompatibleCLI(ctx, append([]string{command}, commandArgs...), stdin, stdout, stderr, NewAuthClient())
 	}
 	if command == "sync-prompts-worker" {
 		service, err := OpenProject(".")

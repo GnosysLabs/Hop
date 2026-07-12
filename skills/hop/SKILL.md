@@ -120,6 +120,25 @@ publishing destination with:
 hop repo create --private --replace-remote OWNER/REPOSITORY
 ```
 
+Hop also ships native, OAuth-authenticated Gitea command families. Use these
+directly; do not invoke or install Tea:
+
+```text
+hop clone             hop whoami           hop issues / issue / i
+hop pulls / pull / pr hop labels            hop milestones
+hop releases          hop times             hop organizations / orgs
+hop repos             hop branches          hop actions
+hop wiki              hop webhooks          hop comments
+hop open              hop notifications     hop ssh-keys / ssh-key
+hop admin             hop api               hop man
+```
+
+Each family retains its established subcommands and flags, such as
+`hop issues list`, `hop comments add`, `hop pulls checkout`,
+`hop releases create`, and `hop repos create`. Run `hop COMMAND --help` for the
+complete surface. `hop login` and `hop logout` are convenient aliases for Hop's
+OAuth login and logout; they never create a separate Tea credential.
+
 Use `--replace-remote` only when the user asked to change an existing remote.
 After landing, Hop's normal authenticated push publishes the accepted code. For
 Gitea operations without a typed command, call the same-forge API without

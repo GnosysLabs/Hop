@@ -126,3 +126,37 @@ func TestAgentSkillUsesHopOAuthForGithop(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentSkillDocumentsNativeGiteaCommands(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "skills", "hop", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(contents)
+	for _, command := range []string{"hop clone", "hop issues", "hop pulls", "hop releases", "hop repos", "hop actions"} {
+		if !strings.Contains(text, command) {
+			t.Errorf("agent skill omits native command %q", command)
+		}
+	}
+	if !strings.Contains(text, "do not invoke or install Tea") {
+		t.Fatal("agent skill does not forbid a redundant Tea installation/login path")
+	}
+}
+
+func TestReleaseIncludesTeaLicenseNotice(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	notice, err := os.ReadFile(filepath.Join(root, "THIRD_PARTY_NOTICES.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(notice), "Gitea Authors") || !strings.Contains(string(notice), "Permission is hereby granted") {
+		t.Fatal("Tea's required MIT notice is incomplete")
+	}
+	config, err := os.ReadFile(filepath.Join(root, ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), "THIRD_PARTY_NOTICES*") {
+		t.Fatal("release archives omit third-party notices")
+	}
+}
