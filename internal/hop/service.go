@@ -757,7 +757,19 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		message = "Accept " + proposal.ID
 	}
 	message += fmt.Sprintf("\n\nHop-State: %s\nHop-Proposal: %s\nHop-Task: %s\nHop-Attempt: %s\n", acceptedID, proposal.ID, proposal.TaskID, proposal.AttemptID)
-	commit, err := s.Repo.CommitTree(ctx, finalTree, []string{current.GitCommit}, message)
+	author, configured, err := s.Repo.ConfiguredUserIdentity(ctx)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	if !configured {
+		author = s.Repo.SyntheticIdentity()
+	}
+	commit, err := s.Repo.CommitTreeWithOptions(ctx, finalTree, CommitOptions{
+		Message:   message,
+		Parents:   []string{current.GitCommit},
+		Author:    author,
+		Committer: s.Repo.SyntheticIdentity(),
+	})
 	if err != nil {
 		return AcceptResult{}, err
 	}

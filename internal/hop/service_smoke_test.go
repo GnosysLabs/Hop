@@ -1059,6 +1059,33 @@ func TestDisjointProposalsLandAndUndoMovesForward(t *testing.T) {
 	}
 }
 
+func TestAcceptedCommitAttributesPromptingUserAndRetainsHopCommitter(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	runGitTest(t, service.Root, "config", "user.name", "Prompting User")
+	runGitTest(t, service.Root, "config", "user.email", "prompter@example.com")
+
+	attempt, err := service.CreatePrompt(ctx, "Add authored change", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(attempt.Workspace, "authored.txt"), "authored\n")
+	proposal, err := service.Propose(ctx, attempt.Prompt.ID, "Add authored change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := service.Accept(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metadata := runGitTest(t, service.Root, "show", "-s", "--format=%an <%ae>%n%cn <%ce>", accepted.State.GitCommit)
+	want := "Prompting User <prompter@example.com>\nHop <hop@localhost>"
+	if metadata != want {
+		t.Fatalf("accepted commit identity = %q, want %q", metadata, want)
+	}
+}
+
 func TestConcurrentDisjointAcceptancesSerialize(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})

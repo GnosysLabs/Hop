@@ -67,7 +67,7 @@ func (e *GitError) Error() string {
 func (e *GitError) Unwrap() error { return e.Err }
 
 // CommitOptions controls a synthetic commit. Empty identities and timestamps
-// use the GitStore defaults; user Git identity configuration is never used.
+// use the GitStore defaults.
 type CommitOptions struct {
 	Message       string
 	Parents       []string
@@ -476,6 +476,32 @@ func (r *Repository) CommitTree(ctx context.Context, tree string, parents []stri
 		Message: message,
 		Parents: append([]string(nil), parents...),
 	})
+}
+
+// ConfiguredUserIdentity returns the Git identity configured for the user in
+// this repository. Both user.name and user.email must be present.
+func (r *Repository) ConfiguredUserIdentity(ctx context.Context) (GitIdentity, bool, error) {
+	name, nameSet, err := r.configValue(ctx, "user.name")
+	if err != nil {
+		return GitIdentity{}, false, err
+	}
+	email, emailSet, err := r.configValue(ctx, "user.email")
+	if err != nil {
+		return GitIdentity{}, false, err
+	}
+	if !nameSet || !emailSet {
+		return GitIdentity{}, false, nil
+	}
+	identity := GitIdentity{Name: name, Email: email}
+	if err := validateIdentity(identity); err != nil {
+		return GitIdentity{}, false, fmt.Errorf("invalid configured user identity: %w", err)
+	}
+	return identity, true, nil
+}
+
+// SyntheticIdentity is Hop's controlled committer identity.
+func (r *Repository) SyntheticIdentity() GitIdentity {
+	return r.store.identity(GitIdentity{})
 }
 
 // CommitTreeWithOptions creates a synthetic commit without invoking hooks or
@@ -1301,6 +1327,19 @@ func (s *GitStore) identity(override GitIdentity) GitIdentity {
 		identity.Email = override.Email
 	}
 	return identity
+}
+
+func (r *Repository) configValue(ctx context.Context, key string) (string, bool, error) {
+	output, err := r.run(ctx, nil, nil, "config", "--get", key)
+	if err != nil {
+		var gitErr *GitError
+		if errors.As(err, &gitErr) && gitErr.ExitCode == 1 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read git config %s: %w", key, err)
+	}
+	value := trimLine(output)
+	return value, value != "", nil
 }
 
 func (s *GitStore) now() time.Time {
