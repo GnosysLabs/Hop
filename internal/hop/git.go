@@ -925,6 +925,13 @@ func (r *Repository) RemoveWorktree(ctx context.Context, path string, force bool
 	return nil
 }
 
+func (r *Repository) PruneWorktrees(ctx context.Context) error {
+	if _, err := r.run(ctx, nil, nil, "worktree", "prune", "--expire", "now"); err != nil {
+		return fmt.Errorf("prune worktrees: %w", err)
+	}
+	return nil
+}
+
 // Diff returns a binary-capable, full-index patch between two commits or trees.
 // An empty endpoint denotes Git's empty tree, which supports unborn histories.
 func (r *Repository) Diff(ctx context.Context, from, to string) (string, error) {

@@ -37,6 +37,7 @@ Usage:
   hop refresh PROPOSAL
   hop export [--output PATH]
   hop sync
+  hop gc
   hop push
   hop push-tag TAG
   hop status
@@ -481,6 +482,23 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			printRemotePush(stdout, &result)
 		}
 
+	case "gc":
+		if len(commandArgs) != 0 {
+			fmt.Fprintln(stderr, "usage: hop gc")
+			return 2
+		}
+		result, err := service.CleanupWorkspaces(ctx)
+		value = result
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if !jsonOutput {
+			fmt.Fprintf(stdout, "Removed %d of %d terminal workspaces; reclaimed %s\n", result.Removed, result.Scanned, formatByteCount(result.ReclaimedBytes))
+			for _, preserved := range result.Preserved {
+				fmt.Fprintf(stderr, "Preserved %s: %s\n", preserved.AttemptID, preserved.Reason)
+			}
+		}
+
 	case "push-tag":
 		if len(commandArgs) != 1 {
 			fmt.Fprintln(stderr, "usage: hop push-tag TAG")
@@ -659,6 +677,19 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		writeJSON(stdout, map[string]any{"ok": true, "data": value})
 	}
 	return 0
+}
+
+func formatByteCount(value int64) string {
+	const unit = int64(1024)
+	if value < unit {
+		return fmt.Sprintf("%d B", value)
+	}
+	div, exp := unit, 0
+	for n := value / unit; n >= unit && exp < 4; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(value)/float64(div), "KMGTPE"[exp])
 }
 
 func runRepoCLI(ctx context.Context, args []string, jsonOutput bool, stdout, stderr io.Writer) int {

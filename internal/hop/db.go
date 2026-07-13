@@ -1398,6 +1398,61 @@ func (s *Store) UpdateAttemptStatus(ctx context.Context, id, status string) erro
 	return requireOneRow(result, "attempt", id)
 }
 
+// CompleteCleanAttempt atomically closes a source-clean, single-attempt task.
+// The caller verifies the workspace tree first; the expected head prevents a
+// concurrent follow-up from being closed by a racing completion.
+func (s *Store) CompleteCleanAttempt(ctx context.Context, id, expectedHeadID string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin clean attempt completion: %w", err)
+	}
+	defer tx.Rollback()
+	attempt, err := attemptTx(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if attempt.Status != "active" || attempt.HeadStateID != expectedHeadID {
+		return false, nil
+	}
+	var competing int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM attempts
+		 WHERE task_id = ? AND id != ?
+		   AND status NOT IN ('accepted', 'completed', 'failed', 'cancelled', 'rejected')`,
+		attempt.TaskID, attempt.ID).Scan(&competing); err != nil {
+		return false, fmt.Errorf("count competing attempts: %w", err)
+	}
+	if competing != 0 {
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE attempts SET status = 'completed'
+		 WHERE id = ? AND status = 'active' AND head_state_id = ?`,
+		attempt.ID, expectedHeadID)
+	if err != nil {
+		return false, fmt.Errorf("complete clean attempt: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("inspect clean attempt completion: %w", err)
+	}
+	if changed != 1 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = 'completed' WHERE id = ?`, attempt.TaskID); err != nil {
+		return false, fmt.Errorf("complete clean task: %w", err)
+	}
+	if err := insertEventTx(ctx, tx, Event{
+		Kind: "attempt.completed", TaskID: attempt.TaskID, AttemptID: attempt.ID, StateID: expectedHeadID,
+	}, map[string]string{"reason": "completed without source changes"}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit clean attempt completion: %w", err)
+	}
+	return true, nil
+}
+
 func (s *Store) UpdateTaskStatus(ctx context.Context, id, status string) error {
 	if status == "" {
 		return errors.New("hop: task status is required")

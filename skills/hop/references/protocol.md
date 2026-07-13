@@ -91,6 +91,7 @@ hop check "$HOP_STATE_ID" -- <command>
 hop propose --summary "<summary>" "$HOP_STATE_ID"
 hop land <proposal-state> -- <final validation command>
 hop complete --summary "<summary>" --heredoc "$HOP_STATE_ID"
+hop gc
 hop refresh <proposal-state>
 hop push
 ```
@@ -109,8 +110,12 @@ for the current prompt state. Completion is deliberately separate from the Git
 state graph: read-only diagnostics, deployments, and other external operations
 can finish without manufacturing a proposal. The command accepts the final
 response through `--stdin` or `--heredoc`, persists it before delivery, and
-immediately attempts private prompt sync. Agents call it as their final tool
-action, then send the identical text to the user without intervening work.
+immediately attempts private prompt sync. It also closes source-clean read-only
+attempts and reclaims source-clean accepted/completed worktrees. Active attempts
+and terminal worktrees with unrecorded source changes are preserved. `hop gc`
+retries this safe terminal-workspace cleanup without deleting state history.
+Agents call completion as their final tool action, then send the identical text
+to the user without intervening work.
 
 The initial task prompt authorizes the agent to run `hop land` after successful
 validation; a second user approval is not required. Manual review is an opt-in

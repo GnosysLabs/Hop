@@ -242,16 +242,20 @@ func (s *Service) sessionStateContinuable(ctx context.Context, stateID string) (
 	if state.TaskID == "" || state.AttemptID == "" {
 		return false, fmt.Errorf("session state %s does not belong to a task attempt", state.ID)
 	}
+	attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
+	if err != nil {
+		return false, err
+	}
+	switch attempt.Status {
+	case "completed", "failed", "cancelled", "rejected":
+		return false, nil
+	}
 	accepted, exists, err := s.Store.AcceptedForTask(ctx, state.TaskID)
 	if err != nil {
 		return false, err
 	}
 	if !exists {
 		return true, nil
-	}
-	attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
-	if err != nil {
-		return false, err
 	}
 	head, err := s.Store.GetState(ctx, attempt.HeadStateID)
 	if err != nil {
@@ -658,6 +662,10 @@ func (s *Service) CompletePrompt(ctx context.Context, stateID, summary, finalRes
 		return CompletionResult{}, err
 	}
 	result := CompletionResult{Completion: completion}
+	if err := s.finalizeSourceCleanAttempt(ctx, stateID); err != nil {
+		message, _ := RedactPromptSecrets(err.Error())
+		result.Warnings = append(result.Warnings, "completion is stored; clean attempt finalization failed: "+message)
+	}
 	promptSync, syncErr := s.SyncPromptHistory(ctx)
 	if syncErr == nil {
 		result.PromptSync = promptSync
@@ -665,7 +673,139 @@ func (s *Service) CompletePrompt(ctx context.Context, stateID, summary, finalRes
 		message, _ := RedactPromptSecrets(syncErr.Error())
 		result.Warnings = append(result.Warnings, "completion is stored locally; cloud sync failed: "+message)
 	}
+	cleanup, cleanupErr := s.CleanupWorkspaces(ctx)
+	if cleanupErr != nil {
+		message, _ := RedactPromptSecrets(cleanupErr.Error())
+		result.Warnings = append(result.Warnings, "completion is stored; workspace cleanup failed: "+message)
+	} else {
+		result.Cleanup = &cleanup
+	}
 	return result, nil
+}
+
+func (s *Service) finalizeSourceCleanAttempt(ctx context.Context, stateID string) error {
+	state, err := s.Store.GetState(ctx, stateID)
+	if err != nil {
+		return err
+	}
+	attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
+	if err != nil {
+		return err
+	}
+	if attempt.Status != "active" || attempt.HeadStateID != state.ID {
+		return nil
+	}
+	base, err := s.Store.GetState(ctx, attempt.BaseStateID)
+	if err != nil {
+		return err
+	}
+	workspaceRepo, err := OpenRepository(attempt.Workspace)
+	if err != nil {
+		return err
+	}
+	tree, err := workspaceRepo.WorktreeTree(ctx, base.SourceTree)
+	if err != nil {
+		return err
+	}
+	if tree != base.SourceTree {
+		return nil
+	}
+	_, err = s.Store.CompleteCleanAttempt(ctx, attempt.ID, state.ID)
+	return err
+}
+
+// CleanupWorkspaces removes source-clean worktrees for terminal attempts.
+// Immutable states remain pinned in Git and recorded in SQLite. Active or dirty
+// attempts are never removed.
+func (s *Service) CleanupWorkspaces(ctx context.Context) (WorkspaceCleanupResult, error) {
+	release, err := acquireProjectLock(ctx, s.Root, "gc")
+	if err != nil {
+		return WorkspaceCleanupResult{}, err
+	}
+	defer release()
+	attempts, err := s.Store.ListAttempts(ctx, "", "")
+	if err != nil {
+		return WorkspaceCleanupResult{}, err
+	}
+	result := WorkspaceCleanupResult{}
+	for _, attempt := range attempts {
+		if attempt.Status != "accepted" && attempt.Status != "completed" {
+			continue
+		}
+		result.Scanned++
+		expected := filepath.Join(s.Root, ".hop", "workspaces", attempt.ID)
+		if filepath.Clean(attempt.Workspace) != filepath.Clean(expected) {
+			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
+				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "workspace is outside Hop's managed workspace directory",
+			})
+			continue
+		}
+		if _, err := os.Lstat(attempt.Workspace); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
+				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: err.Error(),
+			})
+			continue
+		}
+		head, err := s.Store.GetState(ctx, attempt.HeadStateID)
+		if err != nil {
+			return result, err
+		}
+		workspaceRepo, err := OpenRepository(attempt.Workspace)
+		if err != nil {
+			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
+				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "cannot safely inspect worktree: " + err.Error(),
+			})
+			continue
+		}
+		tree, err := workspaceRepo.WorktreeTree(ctx, head.SourceTree)
+		if err != nil {
+			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
+				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "cannot safely snapshot worktree: " + err.Error(),
+			})
+			continue
+		}
+		if tree != head.SourceTree {
+			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
+				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "terminal worktree contains unrecorded source changes",
+			})
+			continue
+		}
+		bytes, err := directorySize(attempt.Workspace)
+		if err != nil {
+			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
+				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "cannot measure worktree: " + err.Error(),
+			})
+			continue
+		}
+		if err := s.Repo.RemoveWorktree(ctx, attempt.Workspace, true); err != nil {
+			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
+				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: err.Error(),
+			})
+			continue
+		}
+		result.Removed++
+		result.ReclaimedBytes += bytes
+	}
+	if err := s.Repo.PruneWorktrees(ctx); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func directorySize(root string) (int64, error) {
+	var size int64
+	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
 }
 
 // Accept advances Hop's internal accepted lineage without changing the visible

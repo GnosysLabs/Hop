@@ -168,9 +168,23 @@ type PromptCompletion struct {
 }
 
 type CompletionResult struct {
-	Completion PromptCompletion  `json:"completion"`
-	PromptSync *PromptSyncResult `json:"prompt_sync,omitempty"`
-	Warnings   []string          `json:"warnings,omitempty"`
+	Completion PromptCompletion        `json:"completion"`
+	PromptSync *PromptSyncResult       `json:"prompt_sync,omitempty"`
+	Cleanup    *WorkspaceCleanupResult `json:"cleanup,omitempty"`
+	Warnings   []string                `json:"warnings,omitempty"`
+}
+
+type WorkspaceCleanupIssue struct {
+	AttemptID string `json:"attempt_id"`
+	Workspace string `json:"workspace"`
+	Reason    string `json:"reason"`
+}
+
+type WorkspaceCleanupResult struct {
+	Scanned        int                     `json:"scanned"`
+	Removed        int                     `json:"removed"`
+	ReclaimedBytes int64                   `json:"reclaimed_bytes"`
+	Preserved      []WorkspaceCleanupIssue `json:"preserved,omitempty"`
 }
 
 type PromptRepository struct {

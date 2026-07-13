@@ -296,6 +296,107 @@ func TestCompletePromptExportsSummaryAndFinalResponseWithoutProposal(t *testing.
 	}
 }
 
+func TestCompletePromptClosesAndReclaimsSourceCleanAttempt(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.BeginPrompt(ctx, "Inspect the repository", "", "codex", "cleanup-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.CompletePrompt(ctx, started.Prompt.ID, "Inspection complete", "The repository is healthy.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Cleanup == nil || result.Cleanup.Removed != 1 {
+		t.Fatalf("cleanup = %#v", result.Cleanup)
+	}
+	if _, err := os.Stat(started.Workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completed read-only workspace still exists: %v", err)
+	}
+	attempt, err := service.Store.GetAttempt(ctx, started.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != "completed" {
+		t.Fatalf("attempt status = %q, want completed", attempt.Status)
+	}
+	next, err := service.BeginPrompt(ctx, "Start new work", "", "codex", "cleanup-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Attempt.ID == started.Attempt.ID || next.Workspace == started.Workspace {
+		t.Fatalf("completed session reopened old attempt: %#v", next.Attempt)
+	}
+}
+
+func TestCompletePromptPreservesActiveWorkspaceWithSourceChanges(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Begin implementation", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "unfinished.txt"), "unfinished\n")
+	result, err := service.CompletePrompt(ctx, started.Prompt.ID, "Work remains", "The incomplete source changes were preserved.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Cleanup == nil || result.Cleanup.Removed != 0 {
+		t.Fatalf("cleanup = %#v", result.Cleanup)
+	}
+	if _, err := os.Stat(started.Workspace); err != nil {
+		t.Fatalf("active dirty workspace was removed: %v", err)
+	}
+	attempt, err := service.Store.GetAttempt(ctx, started.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != "active" {
+		t.Fatalf("attempt status = %q, want active", attempt.Status)
+	}
+}
+
+func TestCompletePromptReclaimsAcceptedWorkspaceButPreservesLateChanges(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Land a feature", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "feature.txt"), "done\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Add feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Accept(ctx, proposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "late.txt"), "preserve me\n")
+	result, err := service.CompletePrompt(ctx, started.Prompt.ID, "Feature landed", "The feature landed and later source edits remain available.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Cleanup == nil || len(result.Cleanup.Preserved) != 1 {
+		t.Fatalf("cleanup = %#v", result.Cleanup)
+	}
+	if _, err := os.Stat(filepath.Join(started.Workspace, "late.txt")); err != nil {
+		t.Fatalf("late terminal source changes were removed: %v", err)
+	}
+	if err := os.Remove(filepath.Join(started.Workspace, "late.txt")); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := service.CleanupWorkspaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup.Removed != 1 {
+		t.Fatalf("retry cleanup = %#v", cleanup)
+	}
+	if _, err := os.Stat(started.Workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source-clean accepted workspace still exists: %v", err)
+	}
+}
+
 func TestExportRemovesPreviouslyPublishedReconciliationPrompt(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})

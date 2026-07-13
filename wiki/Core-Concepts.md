@@ -31,7 +31,10 @@ conversation stays open.
 
 An attempt is one agent approach. Each attempt has a detached Git worktree under
 `.hop/workspaces/`. Agents edit there instead of racing in the visible project
-root.
+root. `hop complete` removes source-clean accepted/completed worktrees while
+leaving their immutable Git and SQLite history intact. Active workspaces and
+terminal workspaces with unrecorded source changes are preserved; `hop gc`
+retries the same safe cleanup explicitly.
 
 ## Evidence
 

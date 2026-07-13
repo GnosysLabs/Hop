@@ -222,9 +222,10 @@ mechanism; never call a token-management endpoint.
 
    Use the current turn's prompt `HOP_STATE_ID`, not a proposal or accepted
    state. The summary and final response are both private prompt-history data
-   and are sanitized before persistence. `hop complete` immediately attempts
-   authenticated private sync; a sync warning leaves the completion durable
-   locally for retry by `hop sync`.
+   and are sanitized before persistence. `hop complete` closes source-clean
+   read-only attempts, removes source-clean terminal workspaces, and immediately
+   attempts authenticated private sync. Active or dirty workspaces are always
+   preserved; `hop gc` safely retries terminal-workspace cleanup.
 
 10. Send exactly the same response in the final channel immediately after the
     completion command. Do not run another tool or send commentary between
