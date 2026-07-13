@@ -815,6 +815,18 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		}
 	}
 	commitParents := []string{current.GitCommit}
+	incorporatedRemoteTip, err := s.proposalRemoteReconciliationTip(ctx, proposal)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	// The ephemeral candidate is a semantic merge of the current accepted tree
+	// and the proposal. Keeping both parents lets a proposal produced by an
+	// earlier reconciliation carry that input ancestry into any later remote
+	// comparison, including nested accepted-state reconciliations.
+	candidateParents := []string{current.GitCommit, proposal.GitCommit}
+	if incorporatedRemoteTip != "" {
+		commitParents = candidateParents
+	}
 	remoteCtx, cancelRemote := context.WithTimeout(ctx, 30*time.Second)
 	remoteTip, _, remoteExists, err := s.Repo.FetchPushTip(remoteCtx)
 	cancelRemote()
@@ -822,21 +834,23 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		return AcceptResult{}, err
 	}
 	if remoteExists && remoteTip != current.GitCommit {
-		candidate, candidateErr := s.Repo.CommitTree(ctx, finalTree, []string{current.GitCommit}, "Hop remote reconciliation candidate\n")
-		if candidateErr != nil {
-			return AcceptResult{}, candidateErr
-		}
-		mergeBase, mergeErr := s.Repo.MergeBase(ctx, candidate, remoteTip)
-		if mergeErr != nil {
-			return AcceptResult{}, mergeErr
-		}
-		var remoteConflicts []string
-		finalTree, remoteConflicts, err = s.Repo.ComposeTrees(ctx, mergeBase, remoteTip, candidate)
-		if err != nil {
-			return AcceptResult{}, err
-		}
-		if len(remoteConflicts) > 0 {
-			return AcceptResult{}, fmt.Errorf("remote accepted-state reconciliation requires agent resolution: %s", strings.Join(remoteConflicts, ", "))
+		if remoteTip != incorporatedRemoteTip {
+			candidate, candidateErr := s.Repo.CommitTree(ctx, finalTree, candidateParents, "Hop remote reconciliation candidate\n")
+			if candidateErr != nil {
+				return AcceptResult{}, candidateErr
+			}
+			mergeBase, mergeErr := s.Repo.MergeBase(ctx, candidate, remoteTip)
+			if mergeErr != nil {
+				return AcceptResult{}, mergeErr
+			}
+			var remoteConflicts []string
+			finalTree, remoteConflicts, err = s.Repo.ComposeTrees(ctx, mergeBase, remoteTip, candidate)
+			if err != nil {
+				return AcceptResult{}, err
+			}
+			if len(remoteConflicts) > 0 {
+				return AcceptResult{}, &ConflictError{Paths: remoteConflicts, RemoteTip: remoteTip}
+			}
 		}
 		commitParents = []string{remoteTip, current.GitCommit}
 	}
@@ -1188,21 +1202,56 @@ func (s *Service) Refresh(ctx context.Context, proposalID string) (RefreshResult
 	if err != nil {
 		return RefreshResult{}, err
 	}
+	metadata := reconciliationMetadata{Conflicts: conflicts}
+	conflictParents := []string{current.GitCommit, proposal.GitCommit}
+	target := fmt.Sprintf("accepted state %s (%s)", current.ID, current.Summary)
+	if len(conflicts) == 0 {
+		incorporatedRemoteTip, metadataErr := s.proposalRemoteReconciliationTip(ctx, proposal)
+		if metadataErr != nil {
+			return RefreshResult{}, metadataErr
+		}
+		candidateParents := []string{current.GitCommit, proposal.GitCommit}
+		candidate, candidateErr := s.Repo.CommitTree(ctx, conflictTree, candidateParents, "Hop remote reconciliation candidate\n")
+		if candidateErr != nil {
+			return RefreshResult{}, candidateErr
+		}
+		remoteCtx, cancelRemote := context.WithTimeout(ctx, 30*time.Second)
+		remoteTip, _, remoteExists, remoteErr := s.Repo.FetchPushTip(remoteCtx)
+		cancelRemote()
+		if remoteErr != nil {
+			return RefreshResult{}, remoteErr
+		}
+		if remoteExists && remoteTip != current.GitCommit && remoteTip != incorporatedRemoteTip {
+			mergeBase, mergeErr := s.Repo.MergeBase(ctx, candidate, remoteTip)
+			if mergeErr != nil {
+				return RefreshResult{}, mergeErr
+			}
+			conflictTree, conflicts, err = s.Repo.ComposeTrees(ctx, mergeBase, remoteTip, candidate)
+			if err != nil {
+				return RefreshResult{}, err
+			}
+			if len(conflicts) > 0 {
+				metadata = reconciliationMetadata{Conflicts: conflicts, RemoteTip: remoteTip}
+				conflictParents = []string{remoteTip, candidate}
+				target = fmt.Sprintf("remote branch commit %s while retaining accepted state %s (%s)", remoteTip, current.ID, current.Summary)
+			}
+		}
+	}
 	if len(conflicts) == 0 {
 		return RefreshResult{}, fmt.Errorf("proposal %s now merges cleanly; retry hop land", proposal.ID)
 	}
-	commit, err := s.Repo.CommitTree(ctx, conflictTree, []string{current.GitCommit, proposal.GitCommit},
-		fmt.Sprintf("Reconcile %s against %s\n", proposal.ID, current.ID))
+	commit, err := s.Repo.CommitTree(ctx, conflictTree, conflictParents,
+		fmt.Sprintf("Reconcile %s against %s\n", proposal.ID, target))
 	if err != nil {
 		return RefreshResult{}, err
 	}
-	summary, err := encodeReconciliationConflicts(conflicts)
+	summary, err := encodeReconciliationMetadata(metadata)
 	if err != nil {
 		return RefreshResult{}, err
 	}
 	instruction := fmt.Sprintf(
-		"Resolve proposal %s (%s) against accepted state %s (%s). Preserve both compatible intents. Inspect both input states for structural, delete/rename, mode, symlink, or binary conflicts that may have no text markers; resolve every conflict intentionally, remove all merge markers, run hop check, propose the result, and land it without asking the user to coordinate the merge. Conflict candidates: %s",
-		proposal.ID, proposal.Summary, current.ID, current.Summary, strings.Join(conflicts, ", "))
+		"Resolve proposal %s (%s) against %s. Preserve both compatible intents. Inspect every input commit/state for structural, delete/rename, mode, symlink, or binary conflicts that may have no text markers; resolve every conflict intentionally, remove all merge markers, run hop check, propose the result, and land it without asking the user to coordinate the merge. Conflict candidates: %s",
+		proposal.ID, proposal.Summary, target, strings.Join(conflicts, ", "))
 	instruction, _ = RedactPromptSecrets(instruction)
 	attemptID := newID("at")
 	workspace := filepath.Join(s.Root, ".hop", "workspaces", attemptID)
@@ -1280,8 +1329,8 @@ func (s *Service) reconciliationResult(
 	current State,
 	reused bool,
 ) (RefreshResult, error) {
-	conflicts, ok := decodeReconciliationConflicts(prompt.Summary)
-	if !ok || len(conflicts) == 0 {
+	metadata, ok := decodeReconciliationMetadata(prompt.Summary)
+	if !ok || len(metadata.Conflicts) == 0 {
 		return RefreshResult{}, fmt.Errorf("reconciliation prompt %s has no conflict metadata", prompt.ID)
 	}
 	attempt, err := s.Store.GetAttempt(ctx, prompt.AttemptID)
@@ -1301,16 +1350,22 @@ func (s *Service) reconciliationResult(
 		Attempt:      attempt,
 		Proposal:     proposal,
 		AcceptedHead: current,
+		RemoteTip:    metadata.RemoteTip,
 		Workspace:    attempt.Workspace,
 		Deliver:      s.deliveryEnvironment(prompt, attempt),
 		ConflictTree: prompt.SourceTree,
-		Conflicts:    conflicts,
+		Conflicts:    metadata.Conflicts,
 		Reused:       reused,
 	}, nil
 }
 
-func encodeReconciliationConflicts(paths []string) (string, error) {
-	encoded, err := json.Marshal(paths)
+type reconciliationMetadata struct {
+	Conflicts []string `json:"conflicts"`
+	RemoteTip string   `json:"remote_tip,omitempty"`
+}
+
+func encodeReconciliationMetadata(metadata reconciliationMetadata) (string, error) {
+	encoded, err := json.Marshal(metadata)
 	if err != nil {
 		return "", fmt.Errorf("encode reconciliation conflicts: %w", err)
 	}
@@ -1318,14 +1373,50 @@ func encodeReconciliationConflicts(paths []string) (string, error) {
 }
 
 func decodeReconciliationConflicts(summary string) ([]string, bool) {
+	metadata, ok := decodeReconciliationMetadata(summary)
+	return metadata.Conflicts, ok
+}
+
+func decodeReconciliationMetadata(summary string) (reconciliationMetadata, bool) {
 	if !strings.HasPrefix(summary, reconciliationSummaryPrefix) {
-		return nil, false
+		return reconciliationMetadata{}, false
 	}
+	payload := []byte(strings.TrimPrefix(summary, reconciliationSummaryPrefix))
+	var metadata reconciliationMetadata
+	if err := json.Unmarshal(payload, &metadata); err == nil && len(metadata.Conflicts) > 0 {
+		return metadata, true
+	}
+	// Reconciliation prompts created before remote-conflict support stored a
+	// bare path array. Continue accepting those durable states.
 	var paths []string
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(summary, reconciliationSummaryPrefix)), &paths); err != nil {
-		return nil, false
+	if err := json.Unmarshal(payload, &paths); err != nil || len(paths) == 0 {
+		return reconciliationMetadata{}, false
 	}
-	return paths, true
+	return reconciliationMetadata{Conflicts: paths}, true
+}
+
+func (s *Service) proposalRemoteReconciliationTip(ctx context.Context, proposal State) (string, error) {
+	prompt, reconciliation, err := s.Store.ReconciliationPromptForAttempt(ctx, proposal.AttemptID)
+	if err != nil || !reconciliation {
+		return "", err
+	}
+	metadata, ok := decodeReconciliationMetadata(prompt.Summary)
+	if !ok {
+		return "", fmt.Errorf("reconciliation prompt %s has invalid conflict metadata", prompt.ID)
+	}
+	return metadata.RemoteTip, nil
+}
+
+func appendUniqueCommit(parents []string, commit string) []string {
+	if commit == "" {
+		return parents
+	}
+	for _, parent := range parents {
+		if parent == commit {
+			return parents
+		}
+	}
+	return append(parents, commit)
 }
 
 func unresolvedReconciliationMarkers(ctx context.Context, repo *Repository, tree string, conflicts []string) ([]string, error) {

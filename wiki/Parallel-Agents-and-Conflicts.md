@@ -18,18 +18,22 @@ tests run only against an agent's stale starting point.
 
 ## Genuine conflicts
 
-When Git cannot compose both intents, `hop land` exits with code `20` and
-creates a fresh reconciliation attempt. The response includes:
+When Git cannot compose the proposal with either the accepted state or the
+fetched upstream branch, `hop land` exits with code `20` and creates a fresh
+reconciliation attempt. The response includes:
 
 - a reconciliation prompt state;
 - a new isolated workspace;
-- current accepted and proposed inputs; and
+- current accepted and proposed inputs;
+- the remote input commit when upstream conflicts; and
 - conflict candidate paths.
 
 The agent switches to that workspace, preserves both compatible intents,
 resolves the conflict, runs `hop check`, creates a new proposal, and lands again.
 Hop requires successful checked evidence before a reconciliation proposal can
-be frozen.
+be frozen. Remote reconciliation records the upstream tip that the agent
+resolved and re-fetches it during landing, preserving any later compatible
+remote commits without force-pushing.
 
 Text conflicts usually contain diff3 markers. Delete/rename, binary, symlink,
 mode, and directory conflicts may not, so the agent must inspect both input

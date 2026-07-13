@@ -982,6 +982,9 @@ func printRefreshSummary(w io.Writer, result RefreshResult) {
 	fmt.Fprintf(w, "Workspace: %s\n", result.Workspace)
 	fmt.Fprintf(w, "Accepted input: %s · commit %s\n", result.AcceptedHead.ID, shortHash(result.AcceptedHead.GitCommit))
 	fmt.Fprintf(w, "Proposal input: %s · commit %s\n", result.Proposal.ID, shortHash(result.Proposal.GitCommit))
+	if result.RemoteTip != "" {
+		fmt.Fprintf(w, "Remote input: commit %s\n", shortHash(result.RemoteTip))
+	}
 	fmt.Fprintln(w, "Resolve these genuine merge conflicts while preserving both intents (structural conflicts may have no text markers):")
 	for _, path := range result.Conflicts {
 		fmt.Fprintf(w, "  %s\n", path)

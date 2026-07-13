@@ -131,12 +131,15 @@ reconciliation flow. Staged/index state and ignored destination collisions
 remain protected. Materialization uses a disposable index and never moves HEAD,
 the active branch, or the user's real index.
 
-When the three-way merge has genuine unresolved conflicts, `hop land` returns
-exit `20` and automatically prepares a reconciliation prompt in the original
-task but a fresh isolated attempt/workspace. Its JSON includes
-`reconciliation.prompt`, `workspace`,
-`conflicts`, and the proposal/current accepted states. The agent adopts that
-prompt/workspace, resolves both intents, checks, proposes, and lands again.
+When either the accepted-state merge or the fetched upstream-branch merge has
+genuine unresolved conflicts, `hop land` returns exit `20` and automatically
+prepares a reconciliation prompt in the original task but a fresh isolated
+attempt/workspace. Its JSON includes `reconciliation.prompt`, `workspace`,
+`conflicts`, the proposal/current accepted states, and `remote_tip` when the
+upstream branch is an input. The agent adopts that prompt/workspace, resolves
+both intents, checks, proposes, and lands again. Hop records the reconciled
+remote tip and re-fetches before acceptance, so later compatible remote
+advancement is composed without reopening the resolved conflict.
 Structural, binary, delete/rename, mode, and symlink conflicts may have no text
 markers, so the agent must inspect both returned input states. Hop requires a
 successful `hop check` on the resolved tree before reproposal. The user is not

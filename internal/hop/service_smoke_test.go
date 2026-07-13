@@ -1796,6 +1796,125 @@ func TestAutomaticPushReconcilesCompatibleDivergedRemote(t *testing.T) {
 	}
 }
 
+func TestRemotePushConflictReconcilesThroughAgentWorkspace(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"shared.txt": "base\n"})
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTest(t, service.Root, "init", "--quiet", "--bare", remote)
+	runGitTest(t, service.Root, "remote", "add", "origin", remote)
+	branch := runGitTest(t, service.Root, "symbolic-ref", "--short", "HEAD")
+
+	seed, err := service.CreatePrompt(ctx, "Publish the initial branch", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(seed.Workspace, "seed.txt"), "seed\n")
+	seedProposal, err := service.Propose(ctx, seed.Prompt.ID, "Publish the initial branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedLanded, err := service.Land(ctx, seedProposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := filepath.Join(t.TempDir(), "other")
+	runGitTest(t, service.Root, "clone", "--quiet", "--branch", branch, remote, other)
+	writeTestFile(t, filepath.Join(other, "shared.txt"), "remote\n")
+	runGitTest(t, other, "add", "shared.txt")
+	runGitTest(t, other, "-c", "user.name=Remote", "-c", "user.email=remote@example.com", "commit", "--quiet", "-m", "remote change")
+	runGitTest(t, other, "push", "--quiet", "origin", branch)
+	remoteTip := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch)
+
+	local, err := service.CreatePrompt(ctx, "Change the shared value locally", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(local.Workspace, "shared.txt"), "local\n")
+	localProposal, err := service.Propose(ctx, local.Prompt.ID, "Change the shared value locally")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Land(ctx, localProposal.Proposal.ID, nil)
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("land error = %v, want ConflictError", err)
+	}
+	if conflict.RemoteTip != remoteTip || len(conflict.Paths) != 1 || conflict.Paths[0] != "shared.txt" {
+		t.Fatalf("remote conflict = %#v, want tip %s and shared.txt", conflict, remoteTip)
+	}
+	if head, headErr := service.Store.AcceptedHead(ctx); headErr != nil || head.ID != seedLanded.State.ID {
+		t.Fatalf("blocked land advanced accepted head to %s, err=%v", head.ID, headErr)
+	}
+
+	refresh, err := service.Refresh(ctx, localProposal.Proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refresh.RemoteTip != remoteTip {
+		t.Fatalf("reconciliation remote tip = %s, want %s", refresh.RemoteTip, remoteTip)
+	}
+	if len(refresh.Conflicts) != 1 || refresh.Conflicts[0] != "shared.txt" {
+		t.Fatalf("reconciliation conflicts = %#v", refresh.Conflicts)
+	}
+	contents, err := os.ReadFile(filepath.Join(refresh.Workspace, "shared.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(contents, []byte("<<<<<<< ")) || !bytes.Contains(contents, []byte(">>>>>>> ")) {
+		t.Fatalf("remote reconciliation workspace lacks conflict markers:\n%s", contents)
+	}
+
+	// The remote can advance again while the agent resolves the original
+	// conflict. Landing must merge that newer compatible work rather than
+	// assuming the recorded remote tip is still current.
+	writeTestFile(t, filepath.Join(other, "after.txt"), "after\n")
+	runGitTest(t, other, "add", "after.txt")
+	runGitTest(t, other, "-c", "user.name=Remote", "-c", "user.email=remote@example.com", "commit", "--quiet", "-m", "later remote change")
+	runGitTest(t, other, "push", "--quiet", "origin", branch)
+	advancedRemoteTip := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch)
+
+	writeTestFile(t, filepath.Join(refresh.Workspace, "shared.txt"), "remote + local\n")
+	if _, err := service.RunCheck(ctx, refresh.Prompt.ID, []string{
+		"sh", "-c", `test "$(cat shared.txt)" = "remote + local"`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolvedProposal, err := service.Propose(ctx, refresh.Prompt.ID, "Reconcile remote and local shared values")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := service.Land(ctx, resolvedProposal.Proposal.ID, []string{
+		"sh", "-c", `test "$(cat shared.txt)" = "remote + local"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.RemotePush == nil {
+		t.Fatal("resolved remote conflict was not pushed")
+	}
+	if got := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch); got != resolved.State.GitCommit {
+		t.Fatalf("remote branch = %s, want reconciled accepted commit %s", got, resolved.State.GitCommit)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "shared.txt")); err != nil || string(contents) != "remote + local\n" {
+		t.Fatalf("visible reconciled value = %q, err=%v", string(contents), err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "after.txt")); err != nil || string(contents) != "after\n" {
+		t.Fatalf("later remote value = %q, err=%v", string(contents), err)
+	}
+	parents := strings.Fields(runGitTest(t, service.Root, "show", "-s", "--format=%P", resolved.State.GitCommit))
+	if len(parents) != 2 || parents[0] != advancedRemoteTip || parents[1] != seedLanded.State.GitCommit {
+		t.Fatalf("reconciled parents = %v, want [%s %s]", parents, advancedRemoteTip, seedLanded.State.GitCommit)
+	}
+}
+
+func TestReconciliationMetadataDecodesLegacyConflictArray(t *testing.T) {
+	metadata, ok := decodeReconciliationMetadata(reconciliationSummaryPrefix + `["shared.txt"]`)
+	if !ok || len(metadata.Conflicts) != 1 || metadata.Conflicts[0] != "shared.txt" || metadata.RemoteTip != "" {
+		t.Fatalf("legacy reconciliation metadata = %#v, ok=%v", metadata, ok)
+	}
+}
+
 func TestLandMaterializesEmptyUnbornRootAcrossRepeatedLands(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

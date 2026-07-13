@@ -114,6 +114,7 @@ type RefreshResult struct {
 	Attempt      Attempt  `json:"attempt"`
 	Proposal     State    `json:"proposal"`
 	AcceptedHead State    `json:"accepted_head"`
+	RemoteTip    string   `json:"remote_tip,omitempty"`
 	Workspace    string   `json:"workspace"`
 	Deliver      []string `json:"deliver"`
 	ConflictTree string   `json:"conflict_tree"`
@@ -232,10 +233,14 @@ func (e *CommittedStateError) Error() string {
 func (e *CommittedStateError) Unwrap() error { return e.Err }
 
 type ConflictError struct {
-	Paths []string `json:"paths"`
+	Paths     []string `json:"paths"`
+	RemoteTip string   `json:"remote_tip,omitempty"`
 }
 
 func (e *ConflictError) Error() string {
+	if e.RemoteTip != "" {
+		return "automatic merge with the remote branch has genuine unresolved conflicts"
+	}
 	return "automatic three-way merge has genuine unresolved conflicts"
 }
 
