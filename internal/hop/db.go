@@ -443,6 +443,20 @@ func (s *Store) SetAgentSessionHead(ctx context.Context, agent, sessionID, state
 	return nil
 }
 
+// ClearAgentSessionsForAttempt prevents a terminal workspace that has been
+// reclaimed from being reopened by a later prompt in the same agent session.
+func (s *Store) ClearAgentSessionsForAttempt(ctx context.Context, attemptID string) error {
+	if strings.TrimSpace(attemptID) == "" {
+		return errors.New("hop: attempt ID is required")
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM agent_sessions
+		 WHERE head_state_id IN (SELECT id FROM states WHERE attempt_id = ?)`, attemptID); err != nil {
+		return fmt.Errorf("clear terminal attempt sessions: %w", err)
+	}
+	return nil
+}
+
 // RetargetAgentSessions moves interactive sessions that currently point into
 // one attempt to a successor prompt. Reconciliation uses this so a follow-up
 // received while conflicts are being resolved reaches the reconciliation

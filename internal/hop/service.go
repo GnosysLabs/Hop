@@ -268,6 +268,14 @@ func (s *Service) sessionStateContinuable(ctx context.Context, stateID string) (
 	if !covered {
 		return true, nil
 	}
+	if _, err := os.Stat(attempt.Workspace); errors.Is(err, os.ErrNotExist) {
+		// v1.0.5 could reclaim an accepted workspace without clearing its
+		// session pointer. The accepted state already covers the attempt head,
+		// so rolling the next prompt onto current accepted state is safe.
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("inspect attempt workspace: %w", err)
+	}
 	workspaceRepo, err := OpenRepository(attempt.Workspace)
 	if err != nil {
 		return false, err
@@ -778,6 +786,9 @@ func (s *Service) CleanupWorkspaces(ctx context.Context) (WorkspaceCleanupResult
 				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "cannot measure worktree: " + err.Error(),
 			})
 			continue
+		}
+		if err := s.Store.ClearAgentSessionsForAttempt(ctx, attempt.ID); err != nil {
+			return result, err
 		}
 		if err := s.Repo.RemoveWorktree(ctx, attempt.Workspace, true); err != nil {
 			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{

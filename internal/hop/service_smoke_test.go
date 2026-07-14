@@ -95,6 +95,50 @@ func TestInitRefusesTrackedPromptRecords(t *testing.T) {
 	}
 }
 
+func TestFindHopRootStopsAtNestedRepositoryBoundary(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	parent, _ := newTestProject(t, map[string]string{"parent.txt": "parent\n"})
+	child := filepath.Join(parent.Root, "Coding Project")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, child, "init", "--quiet")
+	writeTestFile(t, filepath.Join(child, "child.txt"), "child\n")
+
+	if root, err := FindHopRoot(child); !errors.Is(err, ErrNotHopProject) {
+		t.Fatalf("nested repository inherited Hop root %q, err=%v", root, err)
+	}
+	childService, _, err := InitProject(context.Background(), child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = childService.Close() })
+	childInfo, childErr := os.Stat(child)
+	rootInfo, rootErr := os.Stat(childService.Root)
+	if childErr != nil || rootErr != nil || !os.SameFile(childInfo, rootInfo) {
+		t.Fatalf("nested repository Hop root = %q, want %q", childService.Root, child)
+	}
+}
+
+func TestFindHopRootRetainsSameRepositoryAndManagedWorkspaces(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	subdirectory := filepath.Join(service.Root, "nested", "source")
+	if err := os.MkdirAll(subdirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if root, err := FindHopRoot(subdirectory); err != nil || canonicalExistingPath(root) != canonicalExistingPath(service.Root) {
+		t.Fatalf("same-repository Hop root = %q, err=%v", root, err)
+	}
+	started, err := service.CreatePrompt(context.Background(), "Inspect managed workspace", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, err := FindHopRoot(started.Workspace); err != nil || canonicalExistingPath(root) != canonicalExistingPath(service.Root) {
+		t.Fatalf("managed-workspace Hop root = %q, err=%v", root, err)
+	}
+}
+
 func TestConcurrentFirstBeginsInitializeExactlyOnce(t *testing.T) {
 	t.Setenv("HOP_ROOT", "")
 	root := t.TempDir()
@@ -320,12 +364,47 @@ func TestCompletePromptClosesAndReclaimsSourceCleanAttempt(t *testing.T) {
 	if attempt.Status != "completed" {
 		t.Fatalf("attempt status = %q, want completed", attempt.Status)
 	}
+	if stateID, exists, err := service.Store.AgentSessionHead(ctx, "codex", "cleanup-session"); err != nil || exists {
+		t.Fatalf("terminal session pointer = %q, exists=%v, err=%v", stateID, exists, err)
+	}
 	next, err := service.BeginPrompt(ctx, "Start new work", "", "codex", "cleanup-session")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if next.Attempt.ID == started.Attempt.ID || next.Workspace == started.Workspace {
 		t.Fatalf("completed session reopened old attempt: %#v", next.Attempt)
+	}
+}
+
+func TestBeginRecoversAcceptedSessionWhoseWorkspaceWasAlreadyReclaimed(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.BeginPrompt(ctx, "Land a feature", "", "codex", "v105-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "feature.txt"), "done\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Add feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Accept(ctx, proposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce v1.0.5: the worktree disappeared while the agent session still
+	// pointed at its accepted attempt.
+	if err := service.Repo.RemoveWorktree(ctx, started.Workspace, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists, err := service.Store.AgentSessionHead(ctx, "codex", "v105-session"); err != nil || !exists {
+		t.Fatalf("expected stale v1.0.5 session pointer, exists=%v err=%v", exists, err)
+	}
+	next, err := service.BeginPrompt(ctx, "Start the next task", "", "codex", "v105-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Attempt.ID == started.Attempt.ID || next.Workspace == started.Workspace {
+		t.Fatalf("reclaimed accepted workspace was reopened: %#v", next.Attempt)
 	}
 }
 

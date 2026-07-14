@@ -38,19 +38,60 @@ func FindHopRoot(start string) (string, error) {
 	if !info.IsDir() {
 		abs = filepath.Dir(abs)
 	}
-
-	for dir := abs; ; dir = filepath.Dir(dir) {
-		if _, err := os.Stat(filepath.Join(dir, ".hop", "hop.db")); err == nil {
-			return dir, nil
-		} else if !errors.Is(err, fs.ErrNotExist) {
+	gitRoot, err := FindRepositoryRoot(abs)
+	if err != nil {
+		return "", fmt.Errorf("%w; run 'hop init' first", ErrNotHopProject)
+	}
+	gitRoot = canonicalExistingPath(gitRoot)
+	if exists, err := hopDatabaseExists(gitRoot); err != nil {
+		return "", err
+	} else if exists {
+		return gitRoot, nil
+	}
+	// Hop-created worktrees intentionally live below the canonical repository's
+	// private .hop directory. They are the only case allowed to cross the
+	// current Git root while discovering Hop state.
+	if managedRoot, ok := managedHopRoot(gitRoot); ok {
+		if exists, err := hopDatabaseExists(managedRoot); err != nil {
 			return "", err
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
+		} else if exists {
+			return managedRoot, nil
 		}
 	}
 	return "", fmt.Errorf("%w; run 'hop init' first", ErrNotHopProject)
+}
+
+func hopDatabaseExists(root string) (bool, error) {
+	_, err := os.Stat(filepath.Join(root, ".hop", "hop.db"))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func canonicalExistingPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
+func managedHopRoot(gitRoot string) (string, bool) {
+	collection := filepath.Dir(gitRoot)
+	dotHop := filepath.Dir(collection)
+	if filepath.Base(dotHop) != ".hop" {
+		return "", false
+	}
+	switch filepath.Base(collection) {
+	case "workspaces", "checks", "integration":
+		return canonicalExistingPath(filepath.Dir(dotHop)), true
+	default:
+		return "", false
+	}
 }
 
 func requireHopRoot(root string) (string, error) {

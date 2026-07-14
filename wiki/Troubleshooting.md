@@ -26,6 +26,14 @@ created after Claude Code started, restart it. For another compatible runtime,
 confirm that it reads `~/.agents/skills` or run `hop skill install --path
 /path/to/agent/skills --force`.
 
+## A lock path points outside the selected repository
+
+Upgrade Hop. Older builds could discover an ancestor `.hop` across a nested Git
+repository boundary, causing a child project to use a parent folder's
+`init.lock`. Current Hop treats each nested Git repository as an independent
+project while still recognizing its own managed worktrees. Do not grant the
+agent broader filesystem permissions as a workaround.
+
 ## The installer cannot find a release
 
 Only published Gitea Releases appear through the public releases API. Drafts

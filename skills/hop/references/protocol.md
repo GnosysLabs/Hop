@@ -260,6 +260,9 @@ provide the same boundary inside compatible agent clients.
 ## Failure handling
 
 - **Missing Hop environment:** run `hop begin` before project work and use the returned state and workspace.
+- **Capture failure:** retry and diagnose Hop without inspecting repository
+  contents. Read-only repository inspection is still a project effect and is
+  not a fallback for failed prompt capture.
 - **Completion sync warning:** send the already-recorded response, then let a later `hop sync` retry the durable local completion.
 - **Check failure:** fix the live workspace, checkpoint/check again, then create a new proposal.
 - **Review-only request:** preserve and report the proposal without landing it.

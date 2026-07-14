@@ -64,7 +64,8 @@ the retry idempotent for the task. If the retry fails, inspect Hop's error and
 locks, run `hop doctor`, and repair a safe local operational problem when
 possible. Stop without project effects only when Hop remains unavailable or
 unsafe after recovery; do not abandon the user's request after the first
-timeout.
+timeout. Repository reads are project effects under this protocol: never
+continue with a "read-only inspection" after prompt capture failed.
 
 If Hop reports redactions, never repeat the credential in output, summaries,
 commands recorded as evidence, or proposal text. Refer to its environment
