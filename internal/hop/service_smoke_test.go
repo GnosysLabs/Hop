@@ -120,6 +120,36 @@ func TestFindHopRootStopsAtNestedRepositoryBoundary(t *testing.T) {
 	}
 }
 
+func TestInitDoesNotRequireUserCacheWrite(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	root := t.TempDir()
+	runGitTest(t, root, "init", "--quiet")
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+
+	blockedCache := filepath.Join(t.TempDir(), "not-a-directory")
+	writeTestFile(t, blockedCache, "blocked\n")
+	t.Setenv("HOME", blockedCache)
+	t.Setenv("XDG_CACHE_HOME", blockedCache)
+	t.Setenv("LOCALAPPDATA", blockedCache)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	service, _, err := InitProject(context.Background(), root)
+	if err != nil {
+		t.Fatalf("InitProject required access outside the project: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	lockPath, err := repositoryInitLockPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalExistingPath(root), ".hop", "bootstrap.lock")
+	if lockPath != want {
+		t.Fatalf("repository initialization lock = %q, want project-local %q", lockPath, want)
+	}
+}
+
 func TestFindHopRootRetainsSameRepositoryAndManagedWorkspaces(t *testing.T) {
 	t.Setenv("HOP_ROOT", "")
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})

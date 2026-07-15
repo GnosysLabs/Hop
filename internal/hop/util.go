@@ -215,16 +215,15 @@ func acquireFileLock(ctx context.Context, path, description string) (func(), err
 }
 
 func repositoryInitLockPath(path string) (string, error) {
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("locate user cache for repository initialization lock: %w", err)
-	}
 	canonical, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve repository initialization path: %w", err)
 	}
-	digest := sha256.Sum256([]byte(filepath.Clean(canonical)))
-	return filepath.Join(cache, "hop", "locks", "repository-"+hex.EncodeToString(digest[:])+".lock"), nil
+	// Bootstrap must require write access only to the selected project. Agent
+	// sandboxes commonly allow the repository while denying the user's cache
+	// directory, so a per-user lock makes first use fail before prompt capture.
+	// The private .hop directory is ignored before any snapshot is taken.
+	return filepath.Join(filepath.Clean(canonical), ".hop", "bootstrap.lock"), nil
 }
 
 func shellQuote(argv []string) string {

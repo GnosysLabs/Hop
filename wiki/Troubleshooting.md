@@ -29,10 +29,11 @@ confirm that it reads `~/.agents/skills` or run `hop skill install --path
 ## A lock path points outside the selected repository
 
 Upgrade Hop. Older builds could discover an ancestor `.hop` across a nested Git
-repository boundary, causing a child project to use a parent folder's
-`init.lock`. Current Hop treats each nested Git repository as an independent
-project while still recognizing its own managed worktrees. Do not grant the
-agent broader filesystem permissions as a workaround.
+repository boundary or place the first-use bootstrap lock in the user cache,
+outside the selected project. Current Hop treats each nested Git repository as
+an independent project and keeps repository bootstrap locks inside that
+project's private `.hop` directory. Do not grant the agent broader filesystem
+permissions as a workaround.
 
 ## The installer cannot find a release
 
