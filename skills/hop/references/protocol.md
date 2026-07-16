@@ -111,9 +111,12 @@ state graph: read-only diagnostics, deployments, and other external operations
 can finish without manufacturing a proposal. The command accepts the final
 response through `--stdin` or `--heredoc`, persists it before delivery, and
 immediately attempts private prompt sync. It also closes source-clean read-only
-attempts and reclaims source-clean accepted/completed worktrees. Active attempts
-and terminal worktrees with unrecorded source changes are preserved. `hop gc`
-retries this safe terminal-workspace cleanup without deleting state history.
+attempts and reclaims source-clean terminal worktrees. Begin, completion, and
+`hop gc` park other attempts inactive for 24 hours by checkpointing their exact
+tree and removing only the checkout. A later message in the original session
+rehydrates that checkpoint automatically. `hop gc --all` parks every other
+unfinished attempt immediately and archives dirty terminal worktrees. The
+calling workspace and immutable state history are never deleted.
 Agents call completion as their final tool action, then send the identical text
 to the user without intervening work.
 

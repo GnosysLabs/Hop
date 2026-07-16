@@ -37,7 +37,7 @@ Usage:
   hop refresh PROPOSAL
   hop export [--output PATH]
   hop sync
-  hop gc
+  hop gc [--older-than DURATION | --all]
   hop push
   hop push-tag TAG
   hop status
@@ -197,6 +197,17 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			return printCLIError(err, jsonOutput, stdout, stderr)
 		}
 		begin := BeginResult{PromptResult: result, Initialized: initialized, SessionID: *session}
+		cleanup, cleanupErr := service.CleanupWorkspacesWithOptions(ctx, WorkspaceCleanupOptions{
+			IncludeAbandoned: true,
+			AbandonedAfter:   DefaultAbandonedAfter,
+			ExcludeAttemptID: result.Attempt.ID,
+		})
+		if cleanupErr != nil {
+			message, _ := RedactPromptSecrets(cleanupErr.Error())
+			begin.Warnings = append(begin.Warnings, "prompt captured; abandoned workspace cleanup failed: "+message)
+		} else {
+			begin.Cleanup = &cleanup
+		}
 		if jsonOutput {
 			writeJSON(stdout, map[string]any{"ok": true, "data": begin})
 		} else {
@@ -209,6 +220,12 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			}
 			fmt.Fprintf(stdout, "Captured prompt state %s before project effects\nWorkspace: %s\n", result.Prompt.ID, result.Workspace)
 			fmt.Fprintf(stdout, "Use HOP_STATE_ID=%s HOP_TASK_ID=%s HOP_ATTEMPT_ID=%s for this turn.\n", result.Prompt.ID, result.Task.ID, result.Attempt.ID)
+			if begin.Cleanup != nil && (begin.Cleanup.Parked > 0 || begin.Cleanup.Removed > 0) {
+				printWorkspaceCleanup(stdout, begin.Cleanup)
+			}
+			for _, warning := range begin.Warnings {
+				fmt.Fprintf(stderr, "Warning: %s\n", warning)
+			}
 		}
 		return 0
 	}
@@ -483,20 +500,55 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		}
 
 	case "gc":
-		if len(commandArgs) != 0 {
-			fmt.Fprintln(stderr, "usage: hop gc")
+		fs := flag.NewFlagSet("gc", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		olderThan := fs.Duration("older-than", DefaultAbandonedAfter, "park unfinished workspaces inactive for this duration")
+		all := fs.Bool("all", false, "park every non-current unfinished workspace and archive dirty terminal workspaces")
+		if err := fs.Parse(commandArgs); err != nil {
 			return 2
 		}
-		result, err := service.CleanupWorkspaces(ctx)
+		if fs.NArg() != 0 {
+			fmt.Fprintln(stderr, "usage: hop gc [--older-than DURATION | --all]")
+			return 2
+		}
+		olderSet := false
+		fs.Visit(func(item *flag.Flag) {
+			if item.Name == "older-than" {
+				olderSet = true
+			}
+		})
+		if *all && olderSet {
+			fmt.Fprintln(stderr, "hop gc: --all and --older-than are mutually exclusive")
+			return 2
+		}
+		if !*all && *olderThan <= 0 {
+			fmt.Fprintln(stderr, "hop gc: --older-than must be greater than zero")
+			return 2
+		}
+		excludeAttemptID := os.Getenv("HOP_ATTEMPT_ID")
+		if excludeAttemptID == "" {
+			excludeAttemptID, _, err = service.AttemptContainingPath(ctx, ".")
+			if err != nil {
+				return printCLIError(err, jsonOutput, stdout, stderr)
+			}
+		}
+		retention := *olderThan
+		if *all {
+			retention = 0
+		}
+		result, err := service.CleanupWorkspacesWithOptions(ctx, WorkspaceCleanupOptions{
+			IncludeAbandoned:     true,
+			AbandonedAfter:       retention,
+			ExcludeAttemptID:     excludeAttemptID,
+			ArchiveDirtyTerminal: *all,
+		})
 		value = result
 		if err != nil {
 			return printCLIError(err, jsonOutput, stdout, stderr)
 		}
 		if !jsonOutput {
-			fmt.Fprintf(stdout, "Removed %d of %d terminal workspaces; reclaimed %s\n", result.Removed, result.Scanned, formatByteCount(result.ReclaimedBytes))
-			for _, preserved := range result.Preserved {
-				fmt.Fprintf(stderr, "Preserved %s: %s\n", preserved.AttemptID, preserved.Reason)
-			}
+			printWorkspaceCleanup(stdout, &result)
+			printWorkspaceCleanupIssues(stderr, result.Preserved)
 		}
 
 	case "push-tag":
@@ -690,6 +742,20 @@ func formatByteCount(value int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(value)/float64(div), "KMGTPE"[exp])
+}
+
+func printWorkspaceCleanup(w io.Writer, result *WorkspaceCleanupResult) {
+	if result == nil {
+		return
+	}
+	fmt.Fprintf(w, "Parked %d abandoned attempts; removed %d workspaces; reclaimed %s\n",
+		result.Parked, result.Removed, formatByteCount(result.ReclaimedBytes))
+}
+
+func printWorkspaceCleanupIssues(w io.Writer, issues []WorkspaceCleanupIssue) {
+	for _, preserved := range issues {
+		fmt.Fprintf(w, "Preserved %s: %s\n", preserved.AttemptID, preserved.Reason)
+	}
 }
 
 func runRepoCLI(ctx context.Context, args []string, jsonOutput bool, stdout, stderr io.Writer) int {

@@ -15,7 +15,16 @@ import (
 const (
 	acceptedRef                 = "accepted"
 	reconciliationSummaryPrefix = "hop-reconciliation-conflicts:"
+	DefaultAbandonedAfter       = 24 * time.Hour
 )
+
+type WorkspaceCleanupOptions struct {
+	IncludeAbandoned     bool
+	AbandonedAfter       time.Duration
+	ExcludeAttemptID     string
+	ArchiveDirtyTerminal bool
+	Now                  time.Time
+}
 
 type Service struct {
 	Root  string
@@ -453,6 +462,15 @@ func (s *Service) Checkpoint(ctx context.Context, stateID string) (State, error)
 }
 
 func (s *Service) checkpointAttempt(ctx context.Context, attempt Attempt) (State, error) {
+	var err error
+	attempt, err = s.ensureAttemptWorkspace(ctx, attempt)
+	if err != nil {
+		return State{}, err
+	}
+	return s.checkpointExistingAttempt(ctx, attempt)
+}
+
+func (s *Service) checkpointExistingAttempt(ctx context.Context, attempt Attempt) (State, error) {
 	workspaceRepo, err := OpenRepository(attempt.Workspace)
 	if err != nil {
 		return State{}, err
@@ -490,6 +508,50 @@ func (s *Service) checkpointAttempt(ctx context.Context, attempt Attempt) (State
 		return State{}, mapHeadError(err)
 	}
 	return checkpoint, nil
+}
+
+// ensureAttemptWorkspace rehydrates a parked attempt from its immutable head.
+// This makes resuming the original agent session lossless while allowing the
+// bulky checkout to stay absent when the thread is abandoned.
+func (s *Service) ensureAttemptWorkspace(ctx context.Context, attempt Attempt) (Attempt, error) {
+	if attempt.Status != "parked" {
+		return attempt, nil
+	}
+	head, err := s.Store.GetState(ctx, attempt.HeadStateID)
+	if err != nil {
+		return Attempt{}, err
+	}
+	created := false
+	if _, err := os.Lstat(attempt.Workspace); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(attempt.Workspace), 0o755); err != nil {
+			return Attempt{}, fmt.Errorf("create parked workspace parent: %w", err)
+		}
+		if _, err := s.Repo.AddDetachedWorktree(ctx, attempt.Workspace, head.GitCommit); err != nil {
+			return Attempt{}, fmt.Errorf("rehydrate parked workspace: %w", err)
+		}
+		created = true
+	} else if err != nil {
+		return Attempt{}, fmt.Errorf("inspect parked workspace: %w", err)
+	}
+	reactivated, err := s.Store.ReactivateParkedAttempt(ctx, attempt.ID, head.ID)
+	if err != nil {
+		if created {
+			_ = s.Repo.RemoveWorktree(ctx, attempt.Workspace, true)
+		}
+		return Attempt{}, err
+	}
+	if !reactivated {
+		current, currentErr := s.Store.GetAttempt(ctx, attempt.ID)
+		if currentErr == nil && current.Status != "parked" {
+			return current, nil
+		}
+		if created {
+			_ = s.Repo.RemoveWorktree(ctx, attempt.Workspace, true)
+		}
+		return Attempt{}, &HeadChangedError{Scope: "attempt", Expected: head.ID, Actual: current.HeadStateID}
+	}
+	attempt.Status = "active"
+	return attempt, nil
 }
 
 func (s *Service) RunCheck(ctx context.Context, stateID string, argv []string) (Check, error) {
@@ -555,6 +617,10 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 		return ProposalResult{}, fmt.Errorf("state %s does not belong to an attempt", state.ID)
 	}
 	attempt, err := s.Store.GetAttempt(ctx, state.AttemptID)
+	if err != nil {
+		return ProposalResult{}, err
+	}
+	attempt, err = s.ensureAttemptWorkspace(ctx, attempt)
 	if err != nil {
 		return ProposalResult{}, err
 	}
@@ -681,7 +747,17 @@ func (s *Service) CompletePrompt(ctx context.Context, stateID, summary, finalRes
 		message, _ := RedactPromptSecrets(syncErr.Error())
 		result.Warnings = append(result.Warnings, "completion is stored locally; cloud sync failed: "+message)
 	}
-	cleanup, cleanupErr := s.CleanupWorkspaces(ctx)
+	excludeAttemptID := ""
+	if state, stateErr := s.Store.GetState(ctx, stateID); stateErr == nil && state.AttemptID != "" {
+		if attempt, attemptErr := s.Store.GetAttempt(ctx, state.AttemptID); attemptErr == nil && !isTerminalAttemptStatus(attempt.Status) {
+			excludeAttemptID = attempt.ID
+		}
+	}
+	cleanup, cleanupErr := s.CleanupWorkspacesWithOptions(ctx, WorkspaceCleanupOptions{
+		IncludeAbandoned: true,
+		AbandonedAfter:   DefaultAbandonedAfter,
+		ExcludeAttemptID: excludeAttemptID,
+	})
 	if cleanupErr != nil {
 		message, _ := RedactPromptSecrets(cleanupErr.Error())
 		result.Warnings = append(result.Warnings, "completion is stored; workspace cleanup failed: "+message)
@@ -722,82 +798,136 @@ func (s *Service) finalizeSourceCleanAttempt(ctx context.Context, stateID string
 	return err
 }
 
-// CleanupWorkspaces removes source-clean worktrees for terminal attempts.
-// Immutable states remain pinned in Git and recorded in SQLite. Active or dirty
-// attempts are never removed.
+// CleanupWorkspaces removes terminal worktrees and parks attempts that have
+// been inactive for the default retention window. Parking checkpoints the
+// exact tree before removing the checkout, and the original session can later
+// rehydrate it without losing work.
 func (s *Service) CleanupWorkspaces(ctx context.Context) (WorkspaceCleanupResult, error) {
-	release, err := acquireProjectLock(ctx, s.Root, "gc")
+	return s.CleanupWorkspacesWithOptions(ctx, WorkspaceCleanupOptions{
+		IncludeAbandoned: true,
+		AbandonedAfter:   DefaultAbandonedAfter,
+	})
+}
+
+// AttemptContainingPath identifies the managed attempt whose checkout contains
+// path. GC uses it to protect the workspace from which it is currently run.
+func (s *Service) AttemptContainingPath(ctx context.Context, path string) (string, bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false, err
+	}
+	abs = canonicalExistingPath(abs)
+	attempts, err := s.Store.ListAttempts(ctx, "", "")
+	if err != nil {
+		return "", false, err
+	}
+	for _, attempt := range attempts {
+		workspace := canonicalExistingPath(attempt.Workspace)
+		rel, err := filepath.Rel(workspace, abs)
+		if err != nil {
+			continue
+		}
+		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return attempt.ID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (s *Service) CleanupWorkspacesWithOptions(ctx context.Context, options WorkspaceCleanupOptions) (WorkspaceCleanupResult, error) {
+	if options.AbandonedAfter < 0 {
+		return WorkspaceCleanupResult{}, errors.New("abandoned retention cannot be negative")
+	}
+	if options.Now.IsZero() {
+		options.Now = time.Now().UTC()
+	}
+	// A follow-up and GC must not race workspace checkpoint/removal. The new
+	// prompt is already durable before CLI-triggered cleanup reaches this lock.
+	releasePrompt, err := acquireProjectLock(ctx, s.Root, "prompt")
 	if err != nil {
 		return WorkspaceCleanupResult{}, err
 	}
-	defer release()
+	defer releasePrompt()
+	releaseGC, err := acquireProjectLock(ctx, s.Root, "gc")
+	if err != nil {
+		return WorkspaceCleanupResult{}, err
+	}
+	defer releaseGC()
 	attempts, err := s.Store.ListAttempts(ctx, "", "")
 	if err != nil {
 		return WorkspaceCleanupResult{}, err
 	}
 	result := WorkspaceCleanupResult{}
 	for _, attempt := range attempts {
-		if attempt.Status != "accepted" && attempt.Status != "completed" {
+		if attempt.ID == options.ExcludeAttemptID {
 			continue
 		}
-		result.Scanned++
 		expected := filepath.Join(s.Root, ".hop", "workspaces", attempt.ID)
-		if filepath.Clean(attempt.Workspace) != filepath.Clean(expected) {
-			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
-				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "workspace is outside Hop's managed workspace directory",
-			})
+		if filepath.Base(filepath.Clean(attempt.Workspace)) != attempt.ID ||
+			canonicalExistingPath(filepath.Dir(attempt.Workspace)) != canonicalExistingPath(filepath.Dir(expected)) {
+			if isTerminalAttemptStatus(attempt.Status) || attempt.Status == "parked" || options.IncludeAbandoned {
+				preserveCleanupIssue(&result, attempt, "workspace is outside Hop's managed workspace directory")
+			}
 			continue
 		}
-		if _, err := os.Lstat(attempt.Workspace); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
-				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: err.Error(),
-			})
+
+		_, statErr := os.Lstat(attempt.Workspace)
+		missing := errors.Is(statErr, os.ErrNotExist)
+		if statErr != nil && !missing {
+			preserveCleanupIssue(&result, attempt, statErr.Error())
 			continue
 		}
+
+		if isTerminalAttemptStatus(attempt.Status) {
+			result.Scanned++
+			if missing {
+				continue
+			}
+			if err := s.removeTerminalWorkspace(ctx, attempt, options.ArchiveDirtyTerminal, &result); err != nil {
+				return result, err
+			}
+			continue
+		}
+
+		if attempt.Status == "parked" {
+			if missing {
+				continue
+			}
+			result.Scanned++
+			if err := s.removeParkedWorkspace(ctx, attempt, options.ArchiveDirtyTerminal, &result); err != nil {
+				return result, err
+			}
+			continue
+		}
+
+		if !options.IncludeAbandoned {
+			continue
+		}
+		result.AbandonedScanned++
 		head, err := s.Store.GetState(ctx, attempt.HeadStateID)
 		if err != nil {
 			return result, err
 		}
-		workspaceRepo, err := OpenRepository(attempt.Workspace)
-		if err != nil {
-			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
-				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "cannot safely inspect worktree: " + err.Error(),
-			})
+		lastActivity := head.CreatedAt
+		if attempt.CreatedAt.After(lastActivity) {
+			lastActivity = attempt.CreatedAt
+		}
+		if !missing {
+			_, latest, err := directoryStats(attempt.Workspace)
+			if err != nil {
+				preserveCleanupIssue(&result, attempt, "cannot measure worktree activity: "+err.Error())
+				continue
+			}
+			if latest.After(lastActivity) {
+				lastActivity = latest
+			}
+		}
+		if options.AbandonedAfter > 0 && options.Now.Sub(lastActivity) < options.AbandonedAfter {
 			continue
 		}
-		tree, err := workspaceRepo.WorktreeTree(ctx, head.SourceTree)
-		if err != nil {
-			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
-				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "cannot safely snapshot worktree: " + err.Error(),
-			})
-			continue
-		}
-		if tree != head.SourceTree {
-			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
-				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "terminal worktree contains unrecorded source changes",
-			})
-			continue
-		}
-		bytes, err := directorySize(attempt.Workspace)
-		if err != nil {
-			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
-				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: "cannot measure worktree: " + err.Error(),
-			})
-			continue
-		}
-		if err := s.Store.ClearAgentSessionsForAttempt(ctx, attempt.ID); err != nil {
+		if err := s.parkWorkspace(ctx, attempt, missing, &result); err != nil {
 			return result, err
 		}
-		if err := s.Repo.RemoveWorktree(ctx, attempt.Workspace, true); err != nil {
-			result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
-				AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: err.Error(),
-			})
-			continue
-		}
-		result.Removed++
-		result.ReclaimedBytes += bytes
 	}
 	if err := s.Repo.PruneWorktrees(ctx); err != nil {
 		return result, err
@@ -805,8 +935,173 @@ func (s *Service) CleanupWorkspaces(ctx context.Context) (WorkspaceCleanupResult
 	return result, nil
 }
 
+func (s *Service) parkWorkspace(ctx context.Context, attempt Attempt, missing bool, result *WorkspaceCleanupResult) error {
+	head, err := s.Store.GetState(ctx, attempt.HeadStateID)
+	if err != nil {
+		return err
+	}
+	var bytes int64
+	if !missing {
+		workspaceRepo, err := OpenRepository(attempt.Workspace)
+		if err != nil {
+			preserveCleanupIssue(result, attempt, "cannot inspect abandoned worktree: "+err.Error())
+			return nil
+		}
+		tree, err := workspaceRepo.WorktreeTree(ctx, head.SourceTree)
+		if err != nil {
+			preserveCleanupIssue(result, attempt, "cannot snapshot abandoned worktree: "+err.Error())
+			return nil
+		}
+		if tree != head.SourceTree {
+			head, err = s.checkpointExistingAttempt(ctx, attempt)
+			if err != nil {
+				preserveCleanupIssue(result, attempt, "cannot checkpoint abandoned worktree: "+err.Error())
+				return nil
+			}
+			attempt.HeadStateID = head.ID
+		}
+		bytes, _, err = directoryStats(attempt.Workspace)
+		if err != nil {
+			preserveCleanupIssue(result, attempt, "cannot measure abandoned worktree: "+err.Error())
+			return nil
+		}
+	}
+	parked, err := s.Store.ParkAttempt(ctx, attempt.ID, head.ID)
+	if err != nil {
+		return err
+	}
+	if !parked {
+		preserveCleanupIssue(result, attempt, "attempt changed while it was being parked")
+		return nil
+	}
+	result.Parked++
+	if missing {
+		return nil
+	}
+	workspaceRepo, err := OpenRepository(attempt.Workspace)
+	if err != nil {
+		preserveCleanupIssue(result, attempt, "cannot verify parked worktree: "+err.Error())
+		return nil
+	}
+	tree, err := workspaceRepo.WorktreeTree(ctx, head.SourceTree)
+	if err != nil {
+		preserveCleanupIssue(result, attempt, "cannot verify parked worktree: "+err.Error())
+		return nil
+	}
+	if tree != head.SourceTree {
+		_, _ = s.Store.ReactivateParkedAttempt(ctx, attempt.ID, head.ID)
+		result.Parked--
+		preserveCleanupIssue(result, attempt, "worktree changed while it was being parked")
+		return nil
+	}
+	if err := s.Repo.RemoveWorktree(ctx, attempt.Workspace, true); err != nil {
+		preserveCleanupIssue(result, attempt, err.Error())
+		return nil
+	}
+	result.Removed++
+	result.ReclaimedBytes += bytes
+	return nil
+}
+
+func (s *Service) removeTerminalWorkspace(ctx context.Context, attempt Attempt, archiveDirty bool, result *WorkspaceCleanupResult) error {
+	head, err := s.Store.GetState(ctx, attempt.HeadStateID)
+	if err != nil {
+		return err
+	}
+	workspaceRepo, err := OpenRepository(attempt.Workspace)
+	if err != nil {
+		preserveCleanupIssue(result, attempt, "cannot safely inspect worktree: "+err.Error())
+		return nil
+	}
+	tree, err := workspaceRepo.WorktreeTree(ctx, head.SourceTree)
+	if err != nil {
+		preserveCleanupIssue(result, attempt, "cannot safely snapshot worktree: "+err.Error())
+		return nil
+	}
+	if tree != head.SourceTree {
+		if !archiveDirty {
+			preserveCleanupIssue(result, attempt, "terminal worktree contains unrecorded source changes")
+			return nil
+		}
+		head, err = s.checkpointExistingAttempt(ctx, attempt)
+		if err != nil {
+			preserveCleanupIssue(result, attempt, "cannot checkpoint terminal worktree: "+err.Error())
+			return nil
+		}
+		attempt.HeadStateID = head.ID
+	}
+	bytes, _, err := directoryStats(attempt.Workspace)
+	if err != nil {
+		preserveCleanupIssue(result, attempt, "cannot measure worktree: "+err.Error())
+		return nil
+	}
+	if err := s.Store.ClearAgentSessionsForAttempt(ctx, attempt.ID); err != nil {
+		return err
+	}
+	if err := s.Repo.RemoveWorktree(ctx, attempt.Workspace, true); err != nil {
+		preserveCleanupIssue(result, attempt, err.Error())
+		return nil
+	}
+	result.Removed++
+	result.ReclaimedBytes += bytes
+	return nil
+}
+
+func (s *Service) removeParkedWorkspace(ctx context.Context, attempt Attempt, archiveDirty bool, result *WorkspaceCleanupResult) error {
+	head, err := s.Store.GetState(ctx, attempt.HeadStateID)
+	if err != nil {
+		return err
+	}
+	workspaceRepo, err := OpenRepository(attempt.Workspace)
+	if err != nil {
+		preserveCleanupIssue(result, attempt, "cannot safely inspect parked worktree: "+err.Error())
+		return nil
+	}
+	tree, err := workspaceRepo.WorktreeTree(ctx, head.SourceTree)
+	if err != nil {
+		preserveCleanupIssue(result, attempt, "cannot safely snapshot parked worktree: "+err.Error())
+		return nil
+	}
+	if tree != head.SourceTree {
+		if !archiveDirty {
+			preserveCleanupIssue(result, attempt, "parked worktree contains later source changes")
+			return nil
+		}
+		head, err = s.checkpointExistingAttempt(ctx, attempt)
+		if err != nil {
+			preserveCleanupIssue(result, attempt, "cannot checkpoint parked worktree: "+err.Error())
+			return nil
+		}
+		attempt.HeadStateID = head.ID
+	}
+	bytes, _, err := directoryStats(attempt.Workspace)
+	if err != nil {
+		preserveCleanupIssue(result, attempt, "cannot measure parked worktree: "+err.Error())
+		return nil
+	}
+	if err := s.Repo.RemoveWorktree(ctx, attempt.Workspace, true); err != nil {
+		preserveCleanupIssue(result, attempt, err.Error())
+		return nil
+	}
+	result.Removed++
+	result.ReclaimedBytes += bytes
+	return nil
+}
+
+func preserveCleanupIssue(result *WorkspaceCleanupResult, attempt Attempt, reason string) {
+	result.Preserved = append(result.Preserved, WorkspaceCleanupIssue{
+		AttemptID: attempt.ID, Workspace: attempt.Workspace, Reason: reason,
+	})
+}
+
 func directorySize(root string) (int64, error) {
+	size, _, err := directoryStats(root)
+	return size, err
+}
+
+func directoryStats(root string) (int64, time.Time, error) {
 	var size int64
+	var latest time.Time
 	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -814,9 +1109,12 @@ func directorySize(root string) (int64, error) {
 		if !info.IsDir() {
 			size += info.Size()
 		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
 		return nil
 	})
-	return size, err
+	return size, latest, err
 }
 
 // Accept advances Hop's internal accepted lineage without changing the visible

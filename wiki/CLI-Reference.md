@@ -39,7 +39,7 @@ release.
 | `hop push` | Retry publishing the current accepted commit to its inferred upstream |
 | `hop undo` | Create a forward-only acceptance that restores the previous accepted tree |
 | `hop doctor [--repair]` | Validate database/object/ref consistency |
-| `hop gc` | Remove source-clean accepted/completed worktrees while preserving history |
+| `hop gc [--older-than DURATION \| --all]` | Remove terminal worktrees and park inactive attempts while preserving resumable state |
 
 ## Forge authentication
 

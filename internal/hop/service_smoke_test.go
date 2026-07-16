@@ -465,6 +465,253 @@ func TestCompletePromptPreservesActiveWorkspaceWithSourceChanges(t *testing.T) {
 	}
 }
 
+func TestGCAllParksDirtyAttemptAndResumesOriginalSession(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.BeginPrompt(ctx, "Start unfinished work", "", "codex", "parked-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "unfinished.txt"), "preserve me\n")
+
+	cleanup, err := service.CleanupWorkspacesWithOptions(ctx, WorkspaceCleanupOptions{
+		IncludeAbandoned: true,
+		AbandonedAfter:   0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup.Parked != 1 || cleanup.Removed != 1 || cleanup.ReclaimedBytes == 0 {
+		t.Fatalf("cleanup = %#v", cleanup)
+	}
+	if _, err := os.Stat(started.Workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("parked workspace still exists: %v", err)
+	}
+	parked, err := service.Store.GetAttempt(ctx, started.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != "parked" {
+		t.Fatalf("attempt status = %q, want parked", parked.Status)
+	}
+	parkedHead, err := service.Store.GetState(ctx, parked.HeadStateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parkedHead.Kind != StateCheckpoint {
+		t.Fatalf("parked head kind = %q, want checkpoint", parkedHead.Kind)
+	}
+
+	resumed, err := service.BeginPrompt(ctx, "Resume the unfinished work", "", "codex", "parked-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Attempt.ID != started.Attempt.ID || resumed.Workspace != started.Workspace {
+		t.Fatalf("resumed attempt = %#v, want original attempt %s", resumed.Attempt, started.Attempt.ID)
+	}
+	contents, err := os.ReadFile(filepath.Join(resumed.Workspace, "unfinished.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "preserve me\n" {
+		t.Fatalf("resumed contents = %q", contents)
+	}
+	if resumed.Attempt.Status != "active" {
+		t.Fatalf("resumed attempt status = %q, want active", resumed.Attempt.Status)
+	}
+}
+
+func TestGCAllExcludesCurrentAttempt(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.BeginPrompt(ctx, "Keep this workspace", "", "codex", "current-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := service.CleanupWorkspacesWithOptions(ctx, WorkspaceCleanupOptions{
+		IncludeAbandoned: true,
+		AbandonedAfter:   0,
+		ExcludeAttemptID: started.Attempt.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup.Parked != 0 || cleanup.Removed != 0 {
+		t.Fatalf("cleanup = %#v", cleanup)
+	}
+	if _, err := os.Stat(started.Workspace); err != nil {
+		t.Fatalf("excluded workspace was removed: %v", err)
+	}
+}
+
+func TestGCAllArchivesDirtyTerminalWorkspace(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Land then preserve later work", "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "feature.txt"), "landed\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Land feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Accept(ctx, proposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "late.txt"), "archive me\n")
+
+	cleanup, err := service.CleanupWorkspacesWithOptions(ctx, WorkspaceCleanupOptions{
+		IncludeAbandoned:     true,
+		AbandonedAfter:       0,
+		ArchiveDirtyTerminal: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup.Removed != 1 || len(cleanup.Preserved) != 0 {
+		t.Fatalf("cleanup = %#v", cleanup)
+	}
+	attempt, err := service.Store.GetAttempt(ctx, started.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := service.Store.GetState(ctx, attempt.HeadStateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.Kind != StateCheckpoint {
+		t.Fatalf("archived terminal head kind = %q, want checkpoint", head.Kind)
+	}
+	materialized := filepath.Join(t.TempDir(), "archived")
+	if _, err := service.Repo.AddDetachedWorktree(ctx, materialized, head.GitCommit); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Repo.RemoveWorktree(ctx, materialized, true) })
+	contents, err := os.ReadFile(filepath.Join(materialized, "late.txt"))
+	if err != nil || string(contents) != "archive me\n" {
+		t.Fatalf("archived late work = %q, err=%v", contents, err)
+	}
+}
+
+func TestCLIGCAllProtectsCallingWorkspace(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	started, err := service.BeginPrompt(ctx, "Keep the calling workspace", "", "codex", "gc-caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := service.Root
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(started.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	var stdout, stderr bytes.Buffer
+	if code := RunCLI([]string{"gc", "--all", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("hop gc exited %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	var response struct {
+		Data WorkspaceCleanupResult `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.Parked != 0 || response.Data.Removed != 0 {
+		t.Fatalf("cleanup = %#v", response.Data)
+	}
+	if _, err := os.Stat(started.Workspace); err != nil {
+		t.Fatalf("calling workspace was removed: %v", err)
+	}
+
+	reopened, err := OpenProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	attempt, err := reopened.Store.GetAttempt(ctx, started.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != "active" {
+		t.Fatalf("calling attempt status = %q, want active", attempt.Status)
+	}
+}
+
+func TestCLIBeginAutomaticallyParksDayOldAttempt(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	old, err := service.BeginPrompt(ctx, "Abandon this thread", "", "codex", "old-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(old.Workspace, "unfinished.txt"), "keep me\n")
+	oldTime := time.Now().UTC().Add(-DefaultAbandonedAfter - time.Hour)
+	if _, err := service.Store.db.ExecContext(ctx, `UPDATE attempts SET created_at = ? WHERE id = ?`, formatTime(oldTime), old.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Store.db.ExecContext(ctx, `UPDATE states SET created_at = ? WHERE attempt_id = ?`, formatTime(oldTime), old.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := filepath.Walk(old.Workspace, func(path string, _ os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		return os.Chtimes(path, oldTime, oldTime)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	root := service.Root
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	var stdout, stderr bytes.Buffer
+	code := RunCLIWithInput([]string{"begin", "--json", "--agent", "codex", "--session", "new-session", "--heredoc"}, strings.NewReader("Start fresh\n"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("hop begin exited %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	var response struct {
+		Data BeginResult `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.Cleanup == nil || response.Data.Cleanup.Parked != 1 || response.Data.Cleanup.Removed != 1 {
+		t.Fatalf("begin cleanup = %#v", response.Data.Cleanup)
+	}
+	if _, err := os.Stat(old.Workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old workspace still exists: %v", err)
+	}
+	reopened, err := OpenProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	parked, err := reopened.Store.GetAttempt(ctx, old.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != "parked" {
+		t.Fatalf("old attempt status = %q, want parked", parked.Status)
+	}
+}
+
 func TestCompletePromptReclaimsAcceptedWorkspaceButPreservesLateChanges(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})

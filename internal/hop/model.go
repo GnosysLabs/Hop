@@ -139,8 +139,10 @@ type PromptResult struct {
 
 type BeginResult struct {
 	PromptResult
-	Initialized bool   `json:"initialized"`
-	SessionID   string `json:"session_id,omitempty"`
+	Initialized bool                    `json:"initialized"`
+	SessionID   string                  `json:"session_id,omitempty"`
+	Cleanup     *WorkspaceCleanupResult `json:"cleanup,omitempty"`
+	Warnings    []string                `json:"warnings,omitempty"`
 }
 
 type EnvironmentResult struct {
@@ -181,10 +183,12 @@ type WorkspaceCleanupIssue struct {
 }
 
 type WorkspaceCleanupResult struct {
-	Scanned        int                     `json:"scanned"`
-	Removed        int                     `json:"removed"`
-	ReclaimedBytes int64                   `json:"reclaimed_bytes"`
-	Preserved      []WorkspaceCleanupIssue `json:"preserved,omitempty"`
+	Scanned          int                     `json:"scanned"`
+	AbandonedScanned int                     `json:"abandoned_scanned"`
+	Parked           int                     `json:"parked"`
+	Removed          int                     `json:"removed"`
+	ReclaimedBytes   int64                   `json:"reclaimed_bytes"`
+	Preserved        []WorkspaceCleanupIssue `json:"preserved,omitempty"`
 }
 
 type PromptRepository struct {

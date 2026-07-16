@@ -35,6 +35,20 @@ an independent project and keeps repository bootstrap locks inside that
 project's private `.hop` directory. Do not grant the agent broader filesystem
 permissions as a workaround.
 
+## `.hop/workspaces` is using too much disk space
+
+Current Hop automatically parks attempts after 24 hours without activity. It
+checkpoints unfinished files, removes the checkout, and rehydrates the same
+attempt when its agent session resumes. Reclaim every non-current workspace
+immediately with:
+
+```sh
+hop gc --all
+```
+
+This preserves immutable prompt and source history. Run `hop status` afterward;
+parked attempts remain resumable even though their workspace directory is gone.
+
 ## The installer cannot find a release
 
 Only published Gitea Releases appear through the public releases API. Drafts

@@ -73,6 +73,8 @@ while that work remains unfinished. If Hop prepares reconciliation, the session
 follows its fresh workspace. After the result lands, the next prompt starts a
 new task and attempt rooted at the latest accepted state. Completed workspaces
 are never reopened, and the user does not carry state IDs between messages.
+If an unfinished session was parked after 24 hours of inactivity, the same
+`hop begin` rehydrates its checkpointed workspace before appending the follow-up.
 
 ## Controller-grade capture
 

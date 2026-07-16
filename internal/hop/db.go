@@ -1412,6 +1412,102 @@ func (s *Store) UpdateAttemptStatus(ctx context.Context, id, status string) erro
 	return requireOneRow(result, "attempt", id)
 }
 
+// ParkAttempt atomically marks an unfinished attempt as compacted after its
+// current head has been durably checkpointed. Agent-session pointers are kept
+// so a later message can rehydrate and resume the exact attempt.
+func (s *Store) ParkAttempt(ctx context.Context, id, expectedHeadID string) (bool, error) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(expectedHeadID) == "" {
+		return false, errors.New("hop: attempt ID and expected head are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin attempt parking: %w", err)
+	}
+	defer tx.Rollback()
+	attempt, err := attemptTx(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if attempt.Status == "parked" && attempt.HeadStateID == expectedHeadID {
+		return true, nil
+	}
+	if attempt.HeadStateID != expectedHeadID || isTerminalAttemptStatus(attempt.Status) {
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE attempts SET status = 'parked'
+		 WHERE id = ? AND head_state_id = ?
+		   AND status NOT IN ('accepted', 'completed', 'failed', 'cancelled', 'rejected', 'parked')`,
+		attempt.ID, expectedHeadID)
+	if err != nil {
+		return false, fmt.Errorf("park attempt: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("inspect parked attempt: %w", err)
+	}
+	if changed != 1 {
+		return false, nil
+	}
+	if err := insertEventTx(ctx, tx, Event{
+		Kind: "attempt.parked", TaskID: attempt.TaskID, AttemptID: attempt.ID, StateID: expectedHeadID,
+	}, map[string]string{"reason": "inactive workspace compacted"}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit attempt parking: %w", err)
+	}
+	return true, nil
+}
+
+// ReactivateParkedAttempt restores the mutable status after its exact head has
+// been materialized back into the managed workspace.
+func (s *Store) ReactivateParkedAttempt(ctx context.Context, id, expectedHeadID string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin parked-attempt reactivation: %w", err)
+	}
+	defer tx.Rollback()
+	attempt, err := attemptTx(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if attempt.Status != "parked" || attempt.HeadStateID != expectedHeadID {
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE attempts SET status = 'active'
+		 WHERE id = ? AND status = 'parked' AND head_state_id = ?`, attempt.ID, expectedHeadID)
+	if err != nil {
+		return false, fmt.Errorf("reactivate parked attempt: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("inspect parked-attempt reactivation: %w", err)
+	}
+	if changed != 1 {
+		return false, nil
+	}
+	if err := insertEventTx(ctx, tx, Event{
+		Kind: "attempt.reactivated", TaskID: attempt.TaskID, AttemptID: attempt.ID, StateID: expectedHeadID,
+	}, nil); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit parked-attempt reactivation: %w", err)
+	}
+	return true, nil
+}
+
+func isTerminalAttemptStatus(status string) bool {
+	switch status {
+	case "accepted", "completed", "failed", "cancelled", "rejected":
+		return true
+	default:
+		return false
+	}
+}
+
 // CompleteCleanAttempt atomically closes a source-clean, single-attempt task.
 // The caller verifies the workspace tree first; the expected head prevents a
 // concurrent follow-up from being closed by a racing completion.

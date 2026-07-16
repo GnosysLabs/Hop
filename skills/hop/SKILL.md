@@ -225,8 +225,11 @@ mechanism; never call a token-management endpoint.
    state. The summary and final response are both private prompt-history data
    and are sanitized before persistence. `hop complete` closes source-clean
    read-only attempts, removes source-clean terminal workspaces, and immediately
-   attempts authenticated private sync. Active or dirty workspaces are always
-   preserved; `hop gc` safely retries terminal-workspace cleanup.
+   attempts authenticated private sync. It also parks other attempts inactive
+   for 24 hours: Hop checkpoints their exact tree, removes only the checkout,
+   and rehydrates it automatically if that session resumes. The current attempt
+   is never parked. `hop gc --all` immediately parks every other unfinished
+   attempt and archives dirty terminal workspaces without deleting state.
 
 10. Send exactly the same response in the final channel immediately after the
     completion command. Do not run another tool or send commentary between
