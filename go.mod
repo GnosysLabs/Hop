@@ -4,7 +4,9 @@ go 1.26
 
 require (
 	gitea.dev/tea v0.14.3-0.20260701180619-2a9c8ff6fd11
+	github.com/urfave/cli/v3 v3.10.0
 	github.com/zalando/go-keyring v0.2.8
+	golang.org/x/mod v0.36.0
 	modernc.org/sqlite v1.39.1
 )
 
@@ -67,7 +69,6 @@ require (
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966 // indirect
 	github.com/urfave/cli-docs/v3 v3.1.0 // indirect
-	github.com/urfave/cli/v3 v3.10.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect

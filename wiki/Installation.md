@@ -3,6 +3,10 @@
 Packaged binaries are the recommended installation. They need Git 2.40 or
 newer; they do not need a local Go toolchain.
 
+The platform installers are Hop's no-Node bootstrap and recovery path. Once
+installed, `hop update` handles normal standalone upgrades and refreshes the
+bundled agent skill automatically.
+
 ## macOS and Linux
 
 ```bash

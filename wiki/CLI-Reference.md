@@ -66,6 +66,7 @@ Hop's private same-forge Git fetch and push operations.
 | `hop env STATE` | Shell exports for an attempt |
 | `hop diff STATE` | Diff represented by a state |
 | `hop history` | Accepted lineage |
+| `hop update [--check] [--version VERSION] [--force]` | Check for or install a verified Hop release and refresh the embedded skill |
 | `hop version` | Installed version |
 
 `hop status` is read-only with respect to refs, HEAD, the real index, and the
@@ -79,6 +80,25 @@ for a pre-migration accepted state. Failures retain a sanitized error category,
 timestamp, retryability, target remote/ref, and any authoritative remote tip.
 `hop push` performs a fresh remote comparison, rejects divergence without
 force, and changes the durable state to `current` after success.
+
+## CLI updates
+
+```bash
+hop update
+hop update --check
+hop update --version v1.0.10
+```
+
+Hop downloads the matching release archive and `checksums.txt`, verifies its
+SHA-256 checksum and embedded version, atomically replaces a standalone install,
+and refreshes all default skill bundles. A downgrade or same-version reinstall
+requires `--force`. On Windows, a verified helper finishes replacement after the
+running process exits. `HOP_GITEA_URL` and `HOP_REPOSITORY` select another
+release forge and repository; the equivalent CLI flags are `--base-url` and
+`--repository`.
+
+Package-manager installations remain owned by that package manager and should
+use its update command instead of replacing files inside its package directory.
 
 ## Agent integration bundle
 

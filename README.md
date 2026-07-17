@@ -61,6 +61,15 @@ The installer adds the Hop CLI and writes the same embedded skill version to
 pinning, custom locations, and verification, see the
 [installation guide](https://githop.xyz/GnosysLabs/Hop/wiki/Installation).
 
+After the first installation, Hop upgrades itself and refreshes its agent skill:
+
+```bash
+hop update
+```
+
+The standalone installers remain available as a no-Node bootstrap and recovery
+path. Package-manager installations should be upgraded by their package manager.
+
 ## Get started
 
 1. Install Hop.

@@ -50,6 +50,7 @@ Usage:
   hop doctor [--repair]
   hop skill install [--path SKILLS_DIR] [--force]
   hop skill print
+  hop update [--check] [--version VERSION] [--force]
   hop version
 
 OAuth-authenticated Gitea commands:
@@ -94,6 +95,62 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			writeJSON(stdout, map[string]any{"ok": true, "version": version})
 		} else {
 			fmt.Fprintf(stdout, "hop %s\n", version)
+		}
+		return 0
+	}
+	if command == "update" {
+		fs := flag.NewFlagSet("update", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		checkOnly := fs.Bool("check", false, "check for an update without installing it")
+		version := fs.String("version", "latest", "release version or latest")
+		force := fs.Bool("force", false, "reinstall or explicitly downgrade to the requested version")
+		baseURL := fs.String("base-url", updateEnvironmentDefault("HOP_GITEA_URL", defaultUpdateBaseURL), "release forge base URL")
+		repository := fs.String("repository", updateEnvironmentDefault("HOP_REPOSITORY", defaultUpdateRepository), "release repository as OWNER/NAME")
+		if err := fs.Parse(commandArgs); err != nil {
+			return 2
+		}
+		if fs.NArg() != 0 {
+			fmt.Fprintln(stderr, "usage: hop update [--check] [--version VERSION] [--force]")
+			return 2
+		}
+		result, err := NewUpdater().Update(ctx, effectiveVersion(), UpdateOptions{
+			Version: *version, CheckOnly: *checkOnly, Force: *force,
+			BaseURL: *baseURL, Repository: *repository,
+		})
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if jsonOutput {
+			writeJSON(stdout, map[string]any{"ok": true, "data": result})
+		} else {
+			switch {
+			case result.Updated && result.RestartRequired:
+				fmt.Fprintf(stdout, "Hop %s is verified; Windows will finish replacing %s after this process exits.\n", result.AvailableVersion, result.Binary)
+			case result.Updated:
+				fmt.Fprintf(stdout, "Updated Hop %s → %s\nBinary: %s\n", result.CurrentVersion, result.AvailableVersion, result.Binary)
+				if result.SkillsRefreshed {
+					fmt.Fprintln(stdout, "Refreshed installed Hop agent skills.")
+				}
+			case result.CurrentVersion == result.AvailableVersion:
+				fmt.Fprintf(stdout, "Hop %s is current.\n", result.CurrentVersion)
+			default:
+				fmt.Fprintf(stdout, "Hop %s is available; installed version is %s.\n", result.AvailableVersion, result.CurrentVersion)
+			}
+		}
+		return 0
+	}
+	if command == "update-apply" {
+		fs := flag.NewFlagSet("update-apply", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		target := fs.String("target", "", "replacement target")
+		staging := fs.String("staging", "", "staging directory")
+		parent := fs.Int("parent", 0, "parent process ID")
+		if err := fs.Parse(commandArgs); err != nil || fs.NArg() != 0 || *target == "" || *staging == "" || *parent <= 0 {
+			return 2
+		}
+		if err := completePendingUpdate(*target, *staging, *parent); err != nil {
+			fmt.Fprintf(stderr, "hop update: %v\n", err)
+			return 1
 		}
 		return 0
 	}
@@ -765,6 +822,13 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		writeJSON(stdout, map[string]any{"ok": true, "data": value})
 	}
 	return 0
+}
+
+func updateEnvironmentDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func formatByteCount(value int64) string {

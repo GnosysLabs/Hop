@@ -1,9 +1,26 @@
 # Upgrading and uninstalling
 
-## Upgrade packaged installations
+## Upgrade Hop
 
-Rerun the installer. It replaces the binary and refreshes all default skill
-bundles:
+For a standalone installation made by Hop's macOS, Linux, or Windows installer:
+
+```bash
+hop update
+```
+
+This selects the latest published release for the current operating system and
+architecture, verifies its checksum and reported version, replaces the CLI, and
+refreshes all default skill bundles. Check without changing anything:
+
+```bash
+hop update --check
+```
+
+Pin a release with `hop update --version v1.0.10`. Hop refuses implicit
+downgrades and same-version reinstalls; add `--force` only when that replacement
+is intentional.
+
+Rerunning the installer remains the no-Node bootstrap and recovery path:
 
 ```bash
 curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | sh
@@ -24,11 +41,10 @@ irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 -OutFi
 Remove-Item install.ps1
 ```
 
-After upgrading:
+After upgrading, verify the installation:
 
 ```bash
 hop version
-hop skill install --force
 hop doctor
 ```
 
@@ -40,6 +56,10 @@ Restart any agent client whose installed skill changed.
 go install githop.xyz/GnosysLabs/Hop/cmd/hop@latest
 hop skill install --force
 ```
+
+Package-manager installations should be upgraded through the package manager
+that owns their executable. This avoids modifying files inside a package store
+behind that manager's back.
 
 ## Project migrations
 
