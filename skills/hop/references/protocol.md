@@ -139,6 +139,12 @@ reconciliation flow. Staged/index state and ignored destination collisions
 remain protected. Materialization uses a disposable index and never moves HEAD,
 the active branch, or the user's real index.
 
+This means raw `git status` is not an authoritative description of user work in
+the visible root. When the accepted tree is projected over an older branch or
+index, Git reports the projection as dirtiness. Use `hop status --json`: its
+`git.projection_only_changes`, `git.user_worktree_changed`, and
+`git.user_index_changed` fields distinguish the projection from genuine edits.
+
 When either the accepted-state merge or the fetched upstream-branch merge has
 genuine unresolved conflicts, `hop land` returns exit `20` and automatically
 prepares a reconciliation prompt in the original task but a fresh isolated
@@ -162,8 +168,10 @@ accepted state, including projects created with older Hop builds.
 After every successful `hop land` or `hop accept`, Hop automatically performs a
 non-forced push of the accepted commit when the active branch has an
 unambiguous upstream. No remote is a normal local-only mode. Push failure does
-not undo acceptance; `hop push` retries the current accepted commit. Agents
-must never replace a non-fast-forward rejection with a force-push.
+not undo acceptance. Hop durably records the target, attempt time, sanitized
+failure category, retryability, and last authoritative remote tip. `hop push`
+retries the current accepted commit and clears the warning after success.
+Agents must never replace a non-fast-forward rejection with a force-push.
 
 `hop begin` is the interactive-agent entry point. It initializes Hop when
 necessary and captures the current message before the agent performs project

@@ -1142,12 +1142,9 @@ func (s *Service) Push(ctx context.Context) (RemotePushResult, error) {
 	if err != nil {
 		return RemotePushResult{}, err
 	}
-	pushCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	result, configured, err := s.Repo.PushAccepted(pushCtx, accepted.GitCommit)
+	result, configured, err := s.publishAccepted(ctx, accepted)
 	if err != nil {
-		message, _ := RedactPromptSecrets(err.Error())
-		return RemotePushResult{}, errors.New(message)
+		return RemotePushResult{}, err
 	}
 	if !configured {
 		return RemotePushResult{}, errors.New("hop: no unambiguous Git remote branch is configured for automatic push")
@@ -1279,8 +1276,11 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	remoteCtx, cancelRemote := context.WithTimeout(ctx, 30*time.Second)
 	remoteTip, _, remoteExists, err := s.Repo.FetchPushTip(remoteCtx)
 	cancelRemote()
+	remoteObservationWarning := ""
 	if err != nil {
-		return AcceptResult{}, err
+		message, _ := RedactPromptSecrets(err.Error())
+		remoteObservationWarning = "accepted locally without remote reconciliation because the upstream could not be inspected: " + message
+		remoteExists = false
 	}
 	if remoteExists && remoteTip != current.GitCommit {
 		if remoteTip != incorporatedRemoteTip {
@@ -1425,11 +1425,21 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	if err != nil {
 		return AcceptResult{}, mapHeadError(err)
 	}
+	publicationRecordWarning := ""
+	if err := s.recordPendingPublication(ctx, accepted, remoteTip); err != nil {
+		publicationRecordWarning = "accepted state is durable, but publication status could not be initialized: " + err.Error()
+	}
 	if validationRef != "" {
 		_ = s.Repo.DeleteRef(ctx, "refs/hop/"+validationRef, commit)
 		validationRef = ""
 	}
 	var warnings []string
+	if publicationRecordWarning != "" {
+		warnings = append(warnings, publicationRecordWarning)
+	}
+	if remoteObservationWarning != "" {
+		warnings = append(warnings, remoteObservationWarning)
+	}
 	if err := s.Repo.UpdateHiddenRef(ctx, acceptedRef, commit); err != nil {
 		warnings = append(warnings, "accepted state is durable in SQLite but refs/hop/accepted needs repair: "+err.Error())
 	}
@@ -1561,17 +1571,126 @@ func withoutPortableHopRecords(paths []string) []string {
 }
 
 func (s *Service) attachAutomaticPush(ctx context.Context, result *AcceptResult) {
-	pushCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	pushed, configured, err := s.Repo.PushAccepted(pushCtx, result.State.GitCommit)
+	pushed, configured, err := s.publishAccepted(ctx, result.State)
 	if err != nil {
-		message, _ := RedactPromptSecrets(err.Error())
-		result.Warnings = append(result.Warnings, "accepted state is local, but automatic push failed: "+message)
+		result.Warnings = append(result.Warnings, "accepted state is local, but automatic push failed and remains pending: "+err.Error())
 		return
 	}
 	if configured {
 		result.RemotePush = &pushed
 	}
+}
+
+func (s *Service) publishAccepted(ctx context.Context, accepted State) (RemotePushResult, bool, error) {
+	remote, ref, configured, targetErr := s.Repo.PublicationTarget(ctx)
+	now := time.Now().UTC()
+	publication := PublicationStatus{
+		AcceptedStateID: accepted.ID,
+		Commit:          accepted.GitCommit,
+		Status:          "not_configured",
+		Remote:          remote,
+		Ref:             ref,
+		AttemptedAt:     &now,
+	}
+	if existing, found, readErr := s.Store.PublicationForState(ctx, accepted.ID); readErr != nil {
+		return RemotePushResult{}, configured, readErr
+	} else if found && existing.Commit == accepted.GitCommit {
+		publication.RemoteTip = existing.RemoteTip
+	}
+	if targetErr != nil {
+		message, _ := RedactPromptSecrets(targetErr.Error())
+		publication.Status = "failed"
+		publication.ErrorCategory = "configuration"
+		publication.ErrorMessage = message
+		publication.Retryable = false
+		if err := s.Store.PutPublication(ctx, publication); err != nil {
+			return RemotePushResult{}, false, err
+		}
+		return RemotePushResult{}, false, errors.New(message)
+	}
+	if !configured {
+		if err := s.Store.PutPublication(ctx, publication); err != nil {
+			return RemotePushResult{}, false, err
+		}
+		return RemotePushResult{}, false, nil
+	}
+	publication.Status = "pending"
+	publication.Retryable = true
+	if err := s.Store.PutPublication(ctx, publication); err != nil {
+		return RemotePushResult{}, true, err
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result, _, pushErr := s.Repo.PushAccepted(pushCtx, accepted.GitCommit)
+	if pushErr != nil {
+		message, _ := RedactPromptSecrets(pushErr.Error())
+		publication.Status = "failed"
+		publication.ErrorCategory, publication.Retryable = publicationFailure(pushErr)
+		publication.ErrorMessage = message
+		var diverged *RemoteDivergedError
+		if errors.As(pushErr, &diverged) {
+			publication.RemoteTip = diverged.RemoteTip
+		}
+		if err := s.Store.PutPublication(ctx, publication); err != nil {
+			return RemotePushResult{}, true, fmt.Errorf("%s; additionally could not record publication failure: %w", message, err)
+		}
+		return RemotePushResult{}, true, errors.New(message)
+	}
+	publication.Status = "current"
+	publication.RemoteTip = accepted.GitCommit
+	publication.ErrorCategory = ""
+	publication.ErrorMessage = ""
+	publication.Retryable = false
+	if err := s.Store.PutPublication(ctx, publication); err != nil {
+		return result, true, err
+	}
+	return result, true, nil
+}
+
+func (s *Service) recordPendingPublication(ctx context.Context, accepted State, observedRemoteTip string) error {
+	remote, ref, configured, err := s.Repo.PublicationTarget(ctx)
+	now := time.Now().UTC()
+	publication := PublicationStatus{
+		AcceptedStateID: accepted.ID,
+		Commit:          accepted.GitCommit,
+		Status:          "not_configured",
+		Remote:          remote,
+		Ref:             ref,
+		RemoteTip:       observedRemoteTip,
+		AttemptedAt:     &now,
+	}
+	if err != nil {
+		message, _ := RedactPromptSecrets(err.Error())
+		publication.Status = "failed"
+		publication.ErrorCategory = "configuration"
+		publication.ErrorMessage = message
+	} else if configured {
+		publication.Status = "pending"
+		publication.Retryable = true
+	}
+	return s.Store.PutPublication(ctx, publication)
+}
+
+func publicationFailure(err error) (string, bool) {
+	var diverged *RemoteDivergedError
+	if errors.As(err, &diverged) {
+		return "diverged", false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "timeout", true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"authentication", "authorization", "permission denied", "credentials", "401", "403"} {
+		if strings.Contains(message, marker) {
+			return "authentication", true
+		}
+	}
+	for _, marker := range []string{"could not resolve", "connection", "network", "timed out", "timeout"} {
+		if strings.Contains(message, marker) {
+			return "network", true
+		}
+	}
+	return "git", true
 }
 
 // Sync projects the current accepted tree into a visible root that still
@@ -2048,6 +2167,9 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 		return State{}, mapHeadError(err)
 	}
 	var postCommitErrors []error
+	if err := s.recordPendingPublication(ctx, undo, ""); err != nil {
+		postCommitErrors = append(postCommitErrors, fmt.Errorf("record pending publication: %w", err))
+	}
 	if err := s.Repo.UpdateHiddenRef(ctx, acceptedRef, undo.GitCommit); err != nil {
 		postCommitErrors = append(postCommitErrors, fmt.Errorf("repair refs/hop/accepted: %w", err))
 	}
@@ -2055,6 +2177,9 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 		postCommitErrors = append(postCommitErrors, fmt.Errorf("visible root %s was not synchronized: %w", s.Root, err))
 	} else if err := s.Store.CASMaterializedHead(ctx, rootBase.ID, undo.ID); err != nil {
 		postCommitErrors = append(postCommitErrors, fmt.Errorf("record visible root synchronization: %w", err))
+	}
+	if _, _, err := s.publishAccepted(ctx, undo); err != nil {
+		postCommitErrors = append(postCommitErrors, fmt.Errorf("automatic push failed and remains pending: %w", err))
 	}
 	if len(postCommitErrors) > 0 {
 		return undo, &CommittedStateError{State: undo, Err: errors.Join(postCommitErrors...)}
@@ -2161,21 +2286,55 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	}
 	if !matches {
 		status.RootStatus = "diverged"
-		return status, nil
-	}
-	if err := s.Repo.CheckIndexSafe(ctx, rootState.SourceTree); err != nil {
+	} else if err := s.Repo.CheckIndexSafe(ctx, rootState.SourceTree); err != nil {
 		var conflict *RootConflictError
 		if errors.As(err, &conflict) {
 			status.RootStatus = "diverged"
-			return status, nil
+		} else {
+			return Status{}, err
 		}
+	} else {
+		status.RootStateID = rootState.ID
+		if rootState.ID == status.AcceptedHead.ID {
+			status.RootStatus = "synchronized"
+		} else {
+			status.RootStatus = "stale"
+		}
+	}
+	status.Git, err = s.Repo.GitStatusForAccepted(ctx, status.AcceptedHead.GitCommit, status.AcceptedHead.SourceTree)
+	if err != nil {
 		return Status{}, err
 	}
-	status.RootStateID = rootState.ID
-	if rootState.ID == status.AcceptedHead.ID {
-		status.RootStatus = "synchronized"
-	} else {
-		status.RootStatus = "stale"
+	publication, found, err := s.Store.PublicationForState(ctx, status.AcceptedHead.ID)
+	if err != nil {
+		return Status{}, err
+	}
+	if !found {
+		publication = PublicationStatus{
+			AcceptedStateID: status.AcceptedHead.ID,
+			Commit:          status.AcceptedHead.GitCommit,
+			Status:          "unknown",
+		}
+		if _, _, configured, targetErr := s.Repo.PublicationTarget(ctx); targetErr == nil && !configured {
+			publication.Status = "not_configured"
+		}
+	}
+	status.Publication = publication
+	if publication.RemoteTip != "" {
+		status.Git.LocalTrackingRefMayBeStale = status.Git.LocalTrackingTip != "" && status.Git.LocalTrackingTip != publication.RemoteTip
+		status.Git.UpstreamTip = publication.RemoteTip
+		status.Git.UpstreamObservation = "last_authoritative_remote_check"
+		status.Git.UpstreamObservationMayBeStale = publication.Status != "current"
+		status.Git.AcceptedAheadUpstream, status.Git.AcceptedBehindUpstream, err = s.Repo.DivergenceCounts(ctx, status.AcceptedHead.GitCommit, publication.RemoteTip)
+		if err != nil {
+			return Status{}, err
+		}
+	}
+	if status.Git.ProjectionOnlyChanges {
+		status.Warnings = append(status.Warnings, "raw Git status reflects Hop's accepted-tree projection over a stale local branch/index; it is not uncommitted user work")
+	}
+	if publication.Status == "failed" || publication.Status == "pending" || publication.Status == "unknown" {
+		status.Warnings = append(status.Warnings, "accepted state publication is "+publication.Status+"; run hop push to retry when appropriate")
 	}
 	return status, nil
 }
@@ -2300,6 +2459,16 @@ func (s *Service) Doctor(ctx context.Context, repair bool) (DoctorReport, error)
 			report.RefCommit = head.GitCommit
 			report.Repaired = true
 		}
+	}
+	status, statusErr := s.Status(ctx)
+	if statusErr != nil {
+		return DoctorReport{}, statusErr
+	}
+	if status.Git.ProjectionOnlyChanges {
+		report.Warnings = append(report.Warnings, "raw Git status is projection-only because the visible accepted tree is newer than the unchanged local branch/index")
+	}
+	if status.Publication.Status == "failed" || status.Publication.Status == "pending" || status.Publication.Status == "unknown" {
+		report.Warnings = append(report.Warnings, "accepted state publication is "+status.Publication.Status)
 	}
 	if repair && report.Repaired {
 		verified, verifyErr := s.Doctor(ctx, false)

@@ -70,7 +70,10 @@ pinning, custom locations, and verification, see the
 
 That is the full user workflow. You do not run `hop init`, route prompts through
 a terminal, or work inside `.hop` yourself. After a task, `hop status` shows the
-accepted state and whether the visible project folder is synchronized.
+accepted state, branch projection, real user changes, and durable publication
+state. Because Hop does not move the active branch or index, raw `git status`
+can describe projection-only differences; use `hop status` for the authoritative
+working-root view.
 
 Before an interactive agent returns its answer, `hop complete` records the
 concise outcome and exact final response against that prompt. This works for

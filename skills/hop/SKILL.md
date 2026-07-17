@@ -95,6 +95,12 @@ hop state <HOP_STATE_ID> --json
 hop status --json
 ```
 
+Treat `hop status --json` as authoritative for the selected visible root. Hop
+intentionally projects the accepted tree without moving the active branch or
+real index, so raw `git status` may show a large dirty tree that is entirely
+projection-only. Never describe those paths as user edits unless Hop reports
+`git.user_worktree_changed` or `git.user_index_changed`.
+
 ## Authenticate to githop.xyz with Hop OAuth
 
 For repositories hosted on `githop.xyz`, the intended authentication method is:
@@ -208,9 +214,11 @@ mechanism; never call a token-management endpoint.
 8. Report the accepted result, validation, and remaining risks. Keep internal
    state and evidence IDs out of the normal response unless they help explain a
    failure or the user asks for them. Confirm that `hop land` reported the
-   selected visible project root as synchronized. When it reports an automatic
-   push warning, retry once with `hop push`; never force-push or ask the user to
-   perform routine source-control mechanics.
+   selected visible project root as synchronized. Inspect its durable
+   publication state. If it is `failed` and retryable, retry once with
+   `hop push`; never force-push or ask the user to perform routine
+   source-control mechanics. A `diverged` failure requires Hop reconciliation,
+   not repeated pushes.
 
 9. Before sending the final response, compose its exact text and durably record
    it against the current prompt state:

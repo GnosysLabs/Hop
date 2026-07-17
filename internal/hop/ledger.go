@@ -195,7 +195,7 @@ func (s *Service) buildPromptLedger(ctx context.Context, suppressionRoot string,
 			StateID:         state.ID,
 			Prompt:          state.Prompt,
 			AgentName:       state.Agent,
-			Status:          attempt.Status,
+			Status:          portablePromptStatus(attempt.Status),
 			CreatedAt:       state.CreatedAt,
 			SourceUpdatedAt: state.CreatedAt,
 			Metadata: PortablePromptMetadata{
@@ -232,6 +232,16 @@ func (s *Service) buildPromptLedger(ctx context.Context, suppressionRoot string,
 		ledger.Prompts = append(ledger.Prompts, record)
 	}
 	return ledger, excludedPromptIDs, nil
+}
+
+// parked is a local workspace-retention state, not part of the portable prompt
+// API. Export it as active so older and hosted prompt ledgers can accept the
+// record; reactivation remains represented only in the local attempt graph.
+func portablePromptStatus(status string) string {
+	if status == "parked" {
+		return "active"
+	}
+	return status
 }
 
 func loadSuppressedPromptIDs(destinationRoot string) (map[string]struct{}, error) {

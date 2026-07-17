@@ -521,6 +521,50 @@ func TestGCAllParksDirtyAttemptAndResumesOriginalSession(t *testing.T) {
 	}
 }
 
+func TestParkedAttemptStatusUsesPortablePromptVocabulary(t *testing.T) {
+	if got := portablePromptStatus("parked"); got != "active" {
+		t.Fatalf("portable parked status = %q, want active", got)
+	}
+	if got := portablePromptStatus("completed"); got != "completed" {
+		t.Fatalf("portable completed status = %q", got)
+	}
+}
+
+func TestSchemaSixMigrationPreservesExistingAcceptedState(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	ctx := context.Background()
+	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	root := service.Root
+	if _, err := service.Store.db.ExecContext(ctx, "DROP TABLE publications"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Store.db.ExecContext(ctx, "PRAGMA user_version = 5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	head, err := reopened.Store.AcceptedHead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.ID != initial.ID || head.GitCommit != initial.GitCommit {
+		t.Fatalf("migration changed accepted state: %#v, want %#v", head, initial)
+	}
+	var version int
+	if err := reopened.Store.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 6 {
+		t.Fatalf("schema version = %d, err=%v", version, err)
+	}
+	if _, found, err := reopened.Store.PublicationForState(ctx, initial.ID); err != nil || found {
+		t.Fatalf("legacy publication = found %t, err=%v", found, err)
+	}
+}
+
 func TestGCAllExcludesCurrentAttempt(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
@@ -595,6 +639,8 @@ func TestGCAllArchivesDirtyTerminalWorkspace(t *testing.T) {
 }
 
 func TestCLIGCAllProtectsCallingWorkspace(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
+	t.Setenv("HOP_ATTEMPT_ID", "")
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
 	started, err := service.BeginPrompt(ctx, "Keep the calling workspace", "", "codex", "gc-caller")
@@ -646,6 +692,7 @@ func TestCLIGCAllProtectsCallingWorkspace(t *testing.T) {
 }
 
 func TestCLIBeginAutomaticallyParksDayOldAttempt(t *testing.T) {
+	t.Setenv("HOP_ROOT", "")
 	ctx := context.Background()
 	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
 	old, err := service.BeginPrompt(ctx, "Abandon this thread", "", "codex", "old-session")
@@ -2127,11 +2174,13 @@ func TestLandMaterializesVisibleRootWithoutMovingGitState(t *testing.T) {
 
 func TestLandAutomaticallyPushesAcceptedCommit(t *testing.T) {
 	ctx := context.Background()
-	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	runGitTest(t, service.Root, "init", "--quiet", "--bare", remote)
 	runGitTest(t, service.Root, "remote", "add", "origin", remote)
 	branch := runGitTest(t, service.Root, "symbolic-ref", "--short", "HEAD")
+	runGitTest(t, service.Root, "config", "branch."+branch+".remote", "origin")
+	runGitTest(t, service.Root, "config", "branch."+branch+".merge", "refs/heads/"+branch)
 
 	started, err := service.CreatePrompt(ctx, "Publish accepted work", "", "agent")
 	if err != nil {
@@ -2156,12 +2205,210 @@ func TestLandAutomaticallyPushesAcceptedCommit(t *testing.T) {
 	if got := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", wantRef); got != result.State.GitCommit {
 		t.Fatalf("remote branch = %s, want accepted commit %s", got, result.State.GitCommit)
 	}
+	runGitTest(t, service.Root, "update-ref", "refs/remotes/origin/"+branch, initial.GitCommit)
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Publication.Status != "current" || status.Publication.RemoteTip != result.State.GitCommit || status.Git.UpstreamObservation != "last_authoritative_remote_check" || !status.Git.LocalTrackingRefMayBeStale {
+		t.Fatalf("publication status = %#v", status)
+	}
 	retried, err := service.Push(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if retried.Commit != result.State.GitCommit || retried.Remote != "origin" || retried.Ref != wantRef {
 		t.Fatalf("explicit push retry = %#v", retried)
+	}
+}
+
+func TestStatusExplainsProjectionOverStaleBranchWithoutCallingItUserWork(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	runGitTest(t, root, "init", "--quiet")
+	runGitTest(t, root, "add", "base.txt")
+	runGitTest(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "base")
+	service, _, err := InitProject(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	started, err := service.CreatePrompt(ctx, "Add projected work", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "projected.txt"), "projected\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Add projected work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	landed, err := service.Land(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeHead := runGitTest(t, service.Root, "rev-parse", "HEAD")
+	beforeIndex := runGitTest(t, service.Root, "ls-files", "--stage")
+	beforeRefs := runGitTest(t, service.Root, "show-ref")
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RootStatus != "synchronized" || !status.Git.ProjectionOverStaleRef || !status.Git.ProjectionOnlyChanges {
+		t.Fatalf("projection status = %#v", status)
+	}
+	if status.Git.LocalTip != beforeHead || status.Git.AcceptedTip != landed.State.GitCommit || status.Git.UserIndexChanged || status.Git.UserWorktreeChanged {
+		t.Fatalf("Git status misclassified projection = %#v", status.Git)
+	}
+	if status.Publication.Status != "not_configured" {
+		t.Fatalf("publication = %#v, want not_configured", status.Publication)
+	}
+	doctor, err := service.Doctor(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !doctor.OK || len(doctor.Warnings) == 0 {
+		t.Fatalf("doctor did not explain projection: %#v", doctor)
+	}
+	if got := runGitTest(t, service.Root, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("status moved HEAD from %s to %s", beforeHead, got)
+	}
+	if got := runGitTest(t, service.Root, "ls-files", "--stage"); got != beforeIndex {
+		t.Fatalf("status changed index:\nwant %s\n got %s", beforeIndex, got)
+	}
+	if got := runGitTest(t, service.Root, "show-ref"); got != beforeRefs {
+		t.Fatalf("status changed refs:\nwant %s\n got %s", beforeRefs, got)
+	}
+}
+
+func TestPublicationFailureIsDurableAndRetryClearsIt(t *testing.T) {
+	ctx := context.Background()
+	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	missing := filepath.Join(t.TempDir(), "missing.git")
+	runGitTest(t, service.Root, "remote", "add", "origin", missing)
+	started, err := service.CreatePrompt(ctx, "Accept while publishing is offline", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "local.txt"), "local\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Keep local acceptance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	landed, err := service.Land(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.State.ID == initial.ID || len(landed.Warnings) == 0 {
+		t.Fatalf("acceptance did not survive push failure: %#v", landed)
+	}
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Publication.Status != "failed" || !status.Publication.Retryable || status.Publication.ErrorCategory == "" || status.Publication.ErrorMessage == "" {
+		t.Fatalf("durable failed publication = %#v", status.Publication)
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTest(t, service.Root, "init", "--quiet", "--bare", remote)
+	runGitTest(t, service.Root, "remote", "set-url", "origin", remote)
+	if _, err := service.Push(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, err = service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Publication.Status != "current" || status.Publication.ErrorCategory != "" || status.Publication.Retryable {
+		t.Fatalf("retry did not clear publication warning: %#v", status.Publication)
+	}
+	branch := runGitTest(t, service.Root, "symbolic-ref", "--short", "HEAD")
+	if got := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch); got != landed.State.GitCommit {
+		t.Fatalf("remote = %s, want %s", got, landed.State.GitCommit)
+	}
+}
+
+func TestPushRejectsDivergedRemoteWithoutForceAndRecordsIt(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{"base.txt": "base\n"})
+	missing := filepath.Join(t.TempDir(), "missing.git")
+	runGitTest(t, service.Root, "remote", "add", "origin", missing)
+	started, err := service.CreatePrompt(ctx, "Create local accepted work", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "local.txt"), "local\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Local accepted work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	landed, err := service.Land(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTest(t, service.Root, "init", "--quiet", "--bare", remote)
+	other := filepath.Join(t.TempDir(), "other")
+	runGitTest(t, service.Root, "init", "--quiet", other)
+	writeTestFile(t, filepath.Join(other, "remote.txt"), "remote\n")
+	runGitTest(t, other, "add", "remote.txt")
+	runGitTest(t, other, "-c", "user.name=Remote", "-c", "user.email=remote@example.com", "commit", "--quiet", "-m", "unrelated remote")
+	branch := runGitTest(t, service.Root, "symbolic-ref", "--short", "HEAD")
+	runGitTest(t, other, "remote", "add", "origin", remote)
+	runGitTest(t, other, "push", "--quiet", "origin", "HEAD:refs/heads/"+branch)
+	remoteBefore := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch)
+	runGitTest(t, service.Root, "remote", "set-url", "origin", remote)
+	_, err = service.Push(ctx)
+	var diverged *RemoteDivergedError
+	if !errors.As(err, &diverged) && (err == nil || !strings.Contains(err.Error(), "diverged")) {
+		t.Fatalf("push error = %v, want divergence", err)
+	}
+	if got := runGitTest(t, service.Root, "--git-dir", remote, "rev-parse", "refs/heads/"+branch); got != remoteBefore {
+		t.Fatalf("diverged remote moved from %s to %s", remoteBefore, got)
+	}
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.AcceptedHead.ID != landed.State.ID || status.Publication.Status != "failed" || status.Publication.ErrorCategory != "diverged" || status.Publication.Retryable {
+		t.Fatalf("diverged publication status = %#v", status)
+	}
+}
+
+func TestStatusDistinguishesRealIndexWorktreeAndIgnoredFiles(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestProject(t, map[string]string{".gitignore": "ignored.tmp\n", "base.txt": "base\n"})
+	started, err := service.CreatePrompt(ctx, "Create projection", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "projected.txt"), "projected\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Create projection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, proposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(service.Root, "base.txt"), "user worktree\n")
+	writeTestFile(t, filepath.Join(service.Root, "staged.txt"), "user index\n")
+	writeTestFile(t, filepath.Join(service.Root, "ignored.tmp"), "ignored\n")
+	runGitTest(t, service.Root, "add", "staged.txt")
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Git.UserWorktreeChanged || !slices.Contains(status.Git.UserWorktreePaths, "base.txt") {
+		t.Fatalf("worktree changes = %#v", status.Git)
+	}
+	if !status.Git.UserIndexChanged || !slices.Contains(status.Git.UserIndexPaths, "staged.txt") {
+		t.Fatalf("index changes = %#v", status.Git)
+	}
+	if slices.Contains(status.Git.UserWorktreePaths, "ignored.tmp") || slices.Contains(status.Git.UserIndexPaths, "ignored.tmp") {
+		t.Fatalf("ignored file was misclassified as source work: %#v", status.Git)
+	}
+	if contents, err := os.ReadFile(filepath.Join(service.Root, "ignored.tmp")); err != nil || string(contents) != "ignored\n" {
+		t.Fatalf("status changed ignored file: %q, %v", contents, err)
 	}
 }
 

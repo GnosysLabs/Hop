@@ -73,11 +73,54 @@ type GraphRow struct {
 }
 
 type Status struct {
-	Root         string    `json:"root"`
-	AcceptedHead State     `json:"accepted_head"`
-	Attempts     []Attempt `json:"attempts"`
-	RootStatus   string    `json:"root_status"`
-	RootStateID  string    `json:"root_state_id,omitempty"`
+	Root         string            `json:"root"`
+	AcceptedHead State             `json:"accepted_head"`
+	Attempts     []Attempt         `json:"attempts"`
+	RootStatus   string            `json:"root_status"`
+	RootStateID  string            `json:"root_state_id,omitempty"`
+	Git          GitStatus         `json:"git"`
+	Publication  PublicationStatus `json:"publication"`
+	Warnings     []string          `json:"warnings,omitempty"`
+}
+
+// GitStatus separates Hop's accepted-tree projection from the user's actual
+// branch, index, and worktree state. A projected root can look dirty to raw Git
+// solely because Hop intentionally does not move HEAD or the real index.
+type GitStatus struct {
+	Branch                        string   `json:"branch,omitempty"`
+	LocalTip                      string   `json:"local_tip,omitempty"`
+	AcceptedTip                   string   `json:"accepted_tip"`
+	LocalAhead                    int      `json:"local_ahead"`
+	LocalBehind                   int      `json:"local_behind"`
+	UpstreamRef                   string   `json:"upstream_ref,omitempty"`
+	UpstreamTip                   string   `json:"upstream_tip,omitempty"`
+	LocalTrackingTip              string   `json:"local_tracking_tip,omitempty"`
+	LocalTrackingRefMayBeStale    bool     `json:"local_tracking_ref_may_be_stale"`
+	UpstreamObservation           string   `json:"upstream_observation,omitempty"`
+	UpstreamObservationMayBeStale bool     `json:"upstream_observation_may_be_stale"`
+	AcceptedAheadUpstream         int      `json:"accepted_ahead_upstream"`
+	AcceptedBehindUpstream        int      `json:"accepted_behind_upstream"`
+	ProjectionOverStaleRef        bool     `json:"projection_over_stale_ref"`
+	ProjectionOnlyChanges         bool     `json:"projection_only_changes"`
+	UserWorktreeChanged           bool     `json:"user_worktree_changed"`
+	UserWorktreePaths             []string `json:"user_worktree_paths,omitempty"`
+	UserIndexChanged              bool     `json:"user_index_changed"`
+	UserIndexPaths                []string `json:"user_index_paths,omitempty"`
+}
+
+// PublicationStatus is the durable outcome of publishing one accepted state.
+// Failures never roll back acceptance and remain visible until a retry succeeds.
+type PublicationStatus struct {
+	AcceptedStateID string     `json:"accepted_state_id"`
+	Commit          string     `json:"commit"`
+	Status          string     `json:"status"`
+	Remote          string     `json:"remote,omitempty"`
+	Ref             string     `json:"ref,omitempty"`
+	RemoteTip       string     `json:"remote_tip,omitempty"`
+	AttemptedAt     *time.Time `json:"attempted_at,omitempty"`
+	ErrorCategory   string     `json:"error_category,omitempty"`
+	ErrorMessage    string     `json:"error_message,omitempty"`
+	Retryable       bool       `json:"retryable"`
 }
 
 type AcceptResult struct {
@@ -217,6 +260,7 @@ type DoctorReport struct {
 	RefCommit      string   `json:"ref_commit,omitempty"`
 	Repaired       bool     `json:"repaired"`
 	Problems       []string `json:"problems,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 type StaleHeadError struct {
@@ -253,6 +297,15 @@ func (e *CommittedStateError) Unwrap() error { return e.Err }
 type ConflictError struct {
 	Paths     []string `json:"paths"`
 	RemoteTip string   `json:"remote_tip,omitempty"`
+}
+
+type RemoteDivergedError struct {
+	RemoteTip   string `json:"remote_tip"`
+	AcceptedTip string `json:"accepted_tip"`
+}
+
+func (e *RemoteDivergedError) Error() string {
+	return "remote branch has diverged from the accepted state; reconcile it before retrying publication"
 }
 
 func (e *ConflictError) Error() string {

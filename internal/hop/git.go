@@ -305,6 +305,103 @@ func (r *Repository) Head(ctx context.Context) (oid string, exists bool, err err
 	return trimLine(output), true, nil
 }
 
+// GitStatusForAccepted observes branch, upstream, index, and visible files
+// without moving any ref or writing the user's index or worktree.
+func (r *Repository) GitStatusForAccepted(ctx context.Context, acceptedCommit, acceptedTree string) (GitStatus, error) {
+	status := GitStatus{AcceptedTip: acceptedCommit, UpstreamObservationMayBeStale: true}
+	branch, branchExists, err := r.optionalGitOutput(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return status, err
+	}
+	if branchExists {
+		status.Branch = branch
+	}
+	localTip, localExists, err := r.Head(ctx)
+	if err != nil {
+		return status, err
+	}
+	if localExists {
+		status.LocalTip = localTip
+		status.LocalAhead, status.LocalBehind, err = r.DivergenceCounts(ctx, localTip, acceptedCommit)
+		if err != nil {
+			return status, err
+		}
+	}
+	upstreamRemote, hasRemote, err := r.optionalGitOutput(ctx, "config", "--get", "branch."+branch+".remote")
+	if err != nil {
+		return status, err
+	}
+	upstreamMerge, hasMerge, err := r.optionalGitOutput(ctx, "config", "--get", "branch."+branch+".merge")
+	if err != nil {
+		return status, err
+	}
+	if branchExists && hasRemote && hasMerge && upstreamRemote != "." && strings.HasPrefix(upstreamMerge, "refs/heads/") {
+		status.UpstreamRef = "refs/remotes/" + upstreamRemote + "/" + strings.TrimPrefix(upstreamMerge, "refs/heads/")
+		status.UpstreamTip, _, err = r.optionalGitOutput(ctx, "rev-parse", "--verify", status.UpstreamRef+"^{commit}")
+		if err != nil {
+			return status, err
+		}
+		if status.UpstreamTip != "" {
+			status.LocalTrackingTip = status.UpstreamTip
+			status.UpstreamObservation = "local_tracking_ref"
+			status.AcceptedAheadUpstream, status.AcceptedBehindUpstream, err = r.DivergenceCounts(ctx, acceptedCommit, status.UpstreamTip)
+			if err != nil {
+				return status, err
+			}
+		}
+	}
+	acceptedTree, err = r.resolveTree(ctx, acceptedTree)
+	if err != nil {
+		return status, err
+	}
+	actualTree, err := r.WorktreeTree(ctx, acceptedTree)
+	if err != nil {
+		return status, err
+	}
+	if actualTree != acceptedTree {
+		status.UserWorktreeChanged = true
+		status.UserWorktreePaths, err = r.ChangedPaths(ctx, acceptedTree, actualTree)
+		if err != nil {
+			return status, err
+		}
+	}
+	indexTree, indexErr := r.userIndexTree(ctx)
+	if indexErr != nil {
+		status.UserIndexChanged = true
+		return status, nil
+	}
+	headTree, treeErr := r.EmptyTree(ctx)
+	if localExists {
+		headTree, treeErr = r.resolveTree(ctx, localTip)
+	}
+	if treeErr != nil {
+		return status, treeErr
+	}
+	if indexTree != headTree && indexTree != acceptedTree {
+		status.UserIndexChanged = true
+		status.UserIndexPaths, err = r.ChangedPaths(ctx, headTree, indexTree)
+		if err != nil {
+			return status, err
+		}
+	}
+	status.ProjectionOverStaleRef = !localExists || localTip != acceptedCommit
+	status.ProjectionOnlyChanges = status.ProjectionOverStaleRef && !status.UserWorktreeChanged && !status.UserIndexChanged
+	return status, nil
+}
+
+// DivergenceCounts returns commits unique to left and right respectively.
+func (r *Repository) DivergenceCounts(ctx context.Context, left, right string) (int, int, error) {
+	output, err := r.run(ctx, nil, nil, "rev-list", "--left-right", "--count", left+"..."+right)
+	if err != nil {
+		return 0, 0, err
+	}
+	var leftOnly, rightOnly int
+	if _, err := fmt.Sscan(output, &leftOnly, &rightOnly); err != nil {
+		return 0, 0, fmt.Errorf("parse Git divergence counts %q: %w", strings.TrimSpace(output), err)
+	}
+	return leftOnly, rightOnly, nil
+}
+
 // PushAccepted publishes one accepted Hop commit to the repository's existing
 // branch destination. It never force-pushes and returns configured=false when
 // the repository has no unambiguous remote branch target.
@@ -315,6 +412,22 @@ func (r *Repository) PushAccepted(ctx context.Context, commit string) (result Re
 	destination, configured, err := r.pushDestination(ctx)
 	if err != nil || !configured {
 		return result, configured, err
+	}
+	remoteTip, _, remoteExists, err := r.FetchPushTip(ctx)
+	if err != nil {
+		return result, true, err
+	}
+	if remoteExists {
+		if remoteTip == commit {
+			return RemotePushResult{Remote: destination.safeRemote, Ref: destination.ref, Commit: commit}, true, nil
+		}
+		ancestor, ancestorErr := r.IsAncestor(ctx, remoteTip, commit)
+		if ancestorErr != nil {
+			return result, true, ancestorErr
+		}
+		if !ancestor {
+			return result, true, &RemoteDivergedError{RemoteTip: remoteTip, AcceptedTip: commit}
+		}
 	}
 	remote, env, err := r.remoteInvocation(ctx, destination.remote)
 	if err != nil {
@@ -431,6 +544,16 @@ type pushDestination struct {
 	remote     string
 	safeRemote string
 	ref        string
+}
+
+// PublicationTarget reports where accepted states would be pushed without
+// contacting or changing the remote.
+func (r *Repository) PublicationTarget(ctx context.Context) (remote, ref string, configured bool, err error) {
+	destination, configured, err := r.pushDestination(ctx)
+	if err != nil || !configured {
+		return "", "", configured, err
+	}
+	return destination.safeRemote, destination.ref, true, nil
 }
 
 func (r *Repository) pushDestination(ctx context.Context) (pushDestination, bool, error) {
@@ -578,6 +701,23 @@ func (r *Repository) MergeBase(ctx context.Context, left, right string) (string,
 		return "", fmt.Errorf("find merge base: %w", err)
 	}
 	return trimLine(output), nil
+}
+
+func (r *Repository) IsAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
+	if err := validObjectName(ancestor); err != nil {
+		return false, fmt.Errorf("invalid ancestor commit: %w", err)
+	}
+	if err := validObjectName(descendant); err != nil {
+		return false, fmt.Errorf("invalid descendant commit: %w", err)
+	}
+	_, err := r.run(ctx, nil, nil, "merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true, nil
+	}
+	if gitExitCode(err) == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 func (r *Repository) optionalGitOutput(ctx context.Context, args ...string) (string, bool, error) {

@@ -581,6 +581,39 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			default:
 				fmt.Fprintln(stdout, "Root: diverged; Hop will not overwrite it")
 			}
+			if status.Git.Branch != "" {
+				fmt.Fprintf(stdout, "Git: branch %s at %s; accepted at %s (%d ahead, %d behind)\n",
+					status.Git.Branch, shortHash(status.Git.LocalTip), shortHash(status.Git.AcceptedTip),
+					status.Git.LocalAhead, status.Git.LocalBehind)
+			}
+			if status.Git.UpstreamRef != "" || status.Publication.Ref != "" {
+				upstream := status.Git.UpstreamRef
+				if upstream == "" {
+					upstream = status.Publication.Ref
+				}
+				fmt.Fprintf(stdout, "Upstream: %s at %s; accepted is %d ahead, %d behind (%s)\n",
+					upstream, shortHash(status.Git.UpstreamTip), status.Git.AcceptedAheadUpstream,
+					status.Git.AcceptedBehindUpstream, status.Git.UpstreamObservation)
+				if status.Git.LocalTrackingRefMayBeStale {
+					fmt.Fprintf(stdout, "Local tracking ref: %s (stale; authoritative remote observation above)\n", shortHash(status.Git.LocalTrackingTip))
+				}
+			}
+			fmt.Fprintf(stdout, "Publication: %s", status.Publication.Status)
+			if status.Publication.Remote != "" {
+				fmt.Fprintf(stdout, " to %s/%s", status.Publication.Remote, strings.TrimPrefix(status.Publication.Ref, "refs/heads/"))
+			}
+			if status.Publication.ErrorCategory != "" {
+				fmt.Fprintf(stdout, " (%s: %s)", status.Publication.ErrorCategory, status.Publication.ErrorMessage)
+			}
+			fmt.Fprintln(stdout)
+			if status.Git.UserIndexChanged || status.Git.UserWorktreeChanged {
+				fmt.Fprintf(stdout, "User changes: index=%t worktree=%t\n", status.Git.UserIndexChanged, status.Git.UserWorktreeChanged)
+			} else if status.Git.ProjectionOnlyChanges {
+				fmt.Fprintln(stdout, "User changes: none; raw Git dirtiness is projection-only")
+			}
+			for _, warning := range status.Warnings {
+				fmt.Fprintf(stdout, "Warning: %s\n", warning)
+			}
 			if len(status.Attempts) == 0 {
 				fmt.Fprintln(stdout, "No attempts yet.")
 			}
@@ -717,6 +750,9 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 				for _, problem := range report.Problems {
 					fmt.Fprintf(stdout, "Problem: %s\n", problem)
 				}
+			}
+			for _, warning := range report.Warnings {
+				fmt.Fprintf(stdout, "Warning: %s\n", warning)
 			}
 		}
 

@@ -36,7 +36,7 @@ release.
 | `hop accept PROPOSAL [-- COMMAND...]` | Accept internally without changing visible files |
 | `hop sync` | Materialize the accepted tree and retry authenticated private prompt sync |
 | `hop export [--output PATH]` | Write a private local prompt export to ignored `.hop/records/prompts/` |
-| `hop push` | Retry publishing the current accepted commit to its inferred upstream |
+| `hop push` | Safely retry a pending/failed accepted-state publication; never force-push |
 | `hop undo` | Create a forward-only acceptance that restores the previous accepted tree |
 | `hop doctor [--repair]` | Validate database/object/ref consistency |
 | `hop gc [--older-than DURATION \| --all]` | Remove terminal worktrees and park inactive attempts while preserving resumable state |
@@ -60,13 +60,25 @@ Hop's private same-forge Git fetch and push operations.
 
 | Command | Purpose |
 |---|---|
-| `hop status` | Accepted head, attempts, and visible-root status |
+| `hop status` | Accepted/root/branch/upstream relationships, real user changes, attempts, and durable publication status |
 | `hop graph` | State graph |
 | `hop state STATE` | One state and its provenance |
 | `hop env STATE` | Shell exports for an attempt |
 | `hop diff STATE` | Diff represented by a state |
 | `hop history` | Accepted lineage |
 | `hop version` | Installed version |
+
+`hop status` is read-only with respect to refs, HEAD, the real index, and the
+working tree. Its JSON separates the accepted tree projected into the visible
+root from the active branch and index. `git.projection_only_changes=true` means
+raw Git dirtiness is expected projection output, not uncommitted user work.
+`git.user_worktree_paths` and `git.user_index_paths` contain genuine edits.
+
+Publication is `not_configured`, `pending`, `current`, `failed`, or `unknown`
+for a pre-migration accepted state. Failures retain a sanitized error category,
+timestamp, retryability, target remote/ref, and any authoritative remote tip.
+`hop push` performs a fresh remote comparison, rejects divergence without
+force, and changes the durable state to `current` after success.
 
 ## Agent integration bundle
 

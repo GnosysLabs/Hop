@@ -113,6 +113,15 @@ hop push
 If the remote branch moved independently, preserve both histories and resolve
 the divergence intentionally; do not replace this with a force-push.
 
+## Raw Git status shows many changes after landing
+
+Run `hop status`. A synchronized root with
+`git.projection_only_changes=true` is normal: Hop materialized the accepted tree
+while preserving the older active branch and real index. Do not reset,
+checkout, stash, or recommit those projected paths. Only the
+`git.user_worktree_*` and `git.user_index_*` fields represent genuine user
+changes.
+
 ## A secret was pasted
 
 Rotate it. Hop redaction reduces durable exposure but cannot prove that every

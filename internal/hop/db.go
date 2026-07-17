@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 5
+const schemaVersion = 6
 
 var (
 	ErrNotFound            = errors.New("hop: not found")
@@ -272,6 +272,24 @@ var migrations = []migration{
 				completed_at TEXT NOT NULL
 			) STRICT`,
 			`CREATE INDEX IF NOT EXISTS prompt_completions_completed_idx ON prompt_completions(completed_at, prompt_state_id)`,
+		},
+	},
+	{
+		version: 6,
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS publications (
+				accepted_state_id TEXT PRIMARY KEY REFERENCES states(id) ON DELETE CASCADE,
+				commit_oid TEXT NOT NULL,
+				status TEXT NOT NULL,
+				remote TEXT NOT NULL,
+				ref TEXT NOT NULL,
+				remote_tip TEXT NOT NULL,
+				attempted_at TEXT NOT NULL,
+				error_category TEXT NOT NULL,
+				error_message TEXT NOT NULL,
+				retryable INTEGER NOT NULL CHECK (retryable IN (0, 1))
+			) STRICT`,
+			`CREATE INDEX IF NOT EXISTS publications_status_attempted_idx ON publications(status, attempted_at, accepted_state_id)`,
 		},
 	},
 }
@@ -1972,6 +1990,74 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	return Status{Root: root, AcceptedHead: head, Attempts: attempts}, nil
+}
+
+// PutPublication records the latest publishing outcome for an accepted state.
+// The row is deliberately independent of the acceptance transaction: remote
+// failure can never roll back or obscure the accepted state.
+func (s *Store) PutPublication(ctx context.Context, publication PublicationStatus) error {
+	if publication.AcceptedStateID == "" || publication.Commit == "" || publication.Status == "" {
+		return errors.New("hop: publication state, commit, and status are required")
+	}
+	when := ""
+	if publication.AttemptedAt != nil && !publication.AttemptedAt.IsZero() {
+		when = formatTime(*publication.AttemptedAt)
+	}
+	retryable := 0
+	if publication.Retryable {
+		retryable = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO publications(
+			accepted_state_id, commit_oid, status, remote, ref, remote_tip,
+			attempted_at, error_category, error_message, retryable
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(accepted_state_id) DO UPDATE SET
+			commit_oid = excluded.commit_oid,
+			status = excluded.status,
+			remote = excluded.remote,
+			ref = excluded.ref,
+			remote_tip = excluded.remote_tip,
+			attempted_at = excluded.attempted_at,
+			error_category = excluded.error_category,
+			error_message = excluded.error_message,
+			retryable = excluded.retryable`,
+		publication.AcceptedStateID, publication.Commit, publication.Status,
+		publication.Remote, publication.Ref, publication.RemoteTip, when,
+		publication.ErrorCategory, publication.ErrorMessage, retryable)
+	if err != nil {
+		return fmt.Errorf("record publication for %s: %w", publication.AcceptedStateID, err)
+	}
+	return nil
+}
+
+func (s *Store) PublicationForState(ctx context.Context, stateID string) (PublicationStatus, bool, error) {
+	var publication PublicationStatus
+	var attempted string
+	var retryable int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT accepted_state_id, commit_oid, status, remote, ref, remote_tip,
+		        attempted_at, error_category, error_message, retryable
+		 FROM publications WHERE accepted_state_id = ?`, stateID).Scan(
+		&publication.AcceptedStateID, &publication.Commit, &publication.Status,
+		&publication.Remote, &publication.Ref, &publication.RemoteTip, &attempted,
+		&publication.ErrorCategory, &publication.ErrorMessage, &retryable)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PublicationStatus{}, false, nil
+	}
+	if err != nil {
+		return PublicationStatus{}, false, fmt.Errorf("read publication for %s: %w", stateID, err)
+	}
+	if attempted != "" {
+		parsed, parseErr := parseTime(attempted)
+		err = parseErr
+		if err != nil {
+			return PublicationStatus{}, false, fmt.Errorf("parse publication time for %s: %w", stateID, err)
+		}
+		publication.AttemptedAt = &parsed
+	}
+	publication.Retryable = retryable != 0
+	return publication, true, nil
 }
 
 // AppendEvent adds an explicit audit event. Store transitions also add their
