@@ -173,7 +173,7 @@ Prompt creation and canonical acceptance are separate transitions:
 7. By default the agent immediately nominates `R` for automatic acceptance; an explicit review-first request pauses here. Hop reconciles it against the current accepted head in a temporary integration workspace.
 8. Hop evaluates textual overlap, symbol and contract risk, policies, and required tests on the exact final roots.
 9. Hop creates accepted state `A`, linked to both the previous accepted state and `R`, then atomically advances `accepted_head` with compare-and-swap.
-10. In Desktop mode, Hop captures ordinary nonignored visible-root edits as an explicit accepted transition and merges them before materializing `A`; it preserves HEAD and the real Git index and still blocks protected staged/index state, ignored collisions, and synchronization races.
+10. In Desktop mode, Hop captures ordinary nonignored visible-root edits as an explicit accepted transition and merges them before materializing `A`. Once that exact accepted tree is proven visible, it may compare-and-swap fast-forward the intended attached branch and atomically replace only a projection-only real index; protected staged/index state, divergence, Git operations, ignored collisions, and synchronization races remain fail-closed.
 11. Every prompt, checkpoint, proposal, and acceptance remains addressable regardless of later outcomes.
 
 The important invariants are:

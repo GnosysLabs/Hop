@@ -48,6 +48,7 @@ type StateProvenance struct {
 	BaseStateID       string            `json:"base_state_id,omitempty"`
 	BaseTree          string            `json:"base_tree"`
 	CandidateTree     string            `json:"candidate_tree"`
+	BranchRef         string            `json:"branch_ref,omitempty"`
 	Inputs            []ProvenanceInput `json:"inputs,omitempty"`
 	Manifest          []TreeDelta       `json:"manifest,omitempty"`
 	ManifestDigest    string            `json:"manifest_digest"`
@@ -166,6 +167,7 @@ type AcceptResult struct {
 	Check             *Check            `json:"check,omitempty"`
 	MaterializedRoot  string            `json:"materialized_root,omitempty"`
 	RemotePush        *RemotePushResult `json:"remote_push,omitempty"`
+	GitSync           *GitSyncResult    `json:"git_sync,omitempty"`
 	PromptSync        *PromptSyncResult `json:"prompt_sync,omitempty"`
 	Warnings          []string          `json:"warnings,omitempty"`
 }
@@ -182,6 +184,7 @@ type SyncResult struct {
 	FromState  string            `json:"from_state"`
 	Changed    bool              `json:"changed"`
 	PromptSync *PromptSyncResult `json:"prompt_sync,omitempty"`
+	GitSync    *GitSyncResult    `json:"git_sync,omitempty"`
 	Warnings   []string          `json:"warnings,omitempty"`
 }
 
@@ -212,6 +215,17 @@ type PromptResult struct {
 	Workspace  string            `json:"workspace"`
 	Deliver    []string          `json:"deliver"`
 	Redactions []PromptRedaction `json:"redactions,omitempty"`
+	GitSync    *GitSyncResult    `json:"git_sync,omitempty"`
+}
+
+type GitSyncResult struct {
+	Status         string `json:"status"`
+	BranchRef      string `json:"branch_ref,omitempty"`
+	PreviousCommit string `json:"previous_commit,omitempty"`
+	AcceptedCommit string `json:"accepted_commit"`
+	Changed        bool   `json:"changed"`
+	Reason         string `json:"reason,omitempty"`
+	SafeNextAction string `json:"safe_next_action,omitempty"`
 }
 
 type BeginResult struct {

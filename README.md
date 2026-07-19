@@ -19,10 +19,11 @@ and safe multi-agent integration.
   genuine conflicts return to an agent for reconciliation.
 - **Validation follows the code.** Checks run against immutable work and the
   exact final tree before it becomes accepted.
-- **Accepted work is visible.** Successful results appear in the selected
-  project folder without moving your active Git branch or index.
+- **Accepted work is visible and Git stays truthful.** Successful results appear
+  in the selected project folder; when safe, Hop fast-forwards the intended
+  local branch/index so ordinary Git status stays clean.
 - **Publishing is automatic.** When an upstream branch exists, each accepted
-  transition is pushed without moving the local branch or force-pushing.
+  transition is pushed without force-pushing.
 - **History stays local by default.** Detected credentials are redacted before
   prompts and evidence are persisted. Optional authenticated sync keeps prompt
   history private and never puts it in Git.
@@ -79,10 +80,10 @@ path. Package-manager installations should be upgraded by their package manager.
 
 That is the full user workflow. You do not run `hop init`, route prompts through
 a terminal, or work inside `.hop` yourself. After a task, `hop status` shows the
-accepted state, branch projection, real user changes, and durable publication
-state. Because Hop does not move the active branch or index, raw `git status`
-can describe projection-only differences; use `hop status` for the authoritative
-working-root view.
+accepted state, branch projection, real changes, and durable publication state.
+Ordinary Git status is normally clean after landing. If safety checks block the
+branch/index update, `hop status` distinguishes the remaining projection from
+real work and `hop sync-git` explains the safe next action.
 
 Before an interactive agent returns its answer, `hop complete` records the
 concise outcome and exact final response against that prompt. This works for

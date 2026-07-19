@@ -66,6 +66,10 @@ nonignored edits there as a labeled accepted transition, then merges them with
 the proposal through the normal three-way reconciliation flow. The real Git
 index, ignored content, and changes racing with materialization remain
 fail-closed so Hop never silently changes staging intent or private files.
+After the accepted tree is proven visible, Hop normally fast-forwards the
+recorded attached branch and replaces only its projection-only index. This
+second transaction is compare-and-swap guarded and never rewrites visible
+files. `hop sync-git` exposes the same idempotent repair path.
 
 ## Automatic upstream push
 

@@ -14,9 +14,12 @@ Git provides:
 - diffs and path inspection; and
 - interoperability with existing repositories.
 
-Hop never needs to move the user's active branch or rewrite the real index.
 Private objects are pinned beneath `refs/hop/states/*`; accepted history is
-mirrored at `refs/hop/accepted`.
+mirrored at `refs/hop/accepted`. Hop does not use the checked-out branch or real
+index to create agent states or materialize files. After a proven accepted tree
+is already visible, it may separately fast-forward the intended attached local
+branch and atomically replace a projection-only index so ordinary Git presents
+the same truthful state.
 
 ## Hop responsibilities
 
@@ -63,10 +66,25 @@ derived Git refs can be repaired by `hop doctor --repair`. Visible-root landing
 also tracks which accepted state is physically visible, allowing safe catch-up
 with `hop sync` without treating a divergent folder as disposable.
 
+Branch/index synchronization is a second, fail-closed projection transaction.
+Under Hop's acceptance lock it verifies the accepted commit/tree and durable
+materialized marker, exact visible-tree manifest, real index tree, recorded
+target branch, attached HEAD, strict fast-forward ancestry, absence of active
+Git operations and locks, and current accepted/materialized heads. It prepares
+the accepted index privately, obtains `.git/index.lock`, revalidates every
+condition, updates the branch ref by compare-and-swap against the exact old
+object ID, and atomically installs the prepared index. It never rewrites visible
+files, force-updates a ref, or uses `reset --hard`. A concurrent ref or state
+change leaves that newer state intact; every unprovable condition returns a
+specific reason and recovery action. `hop sync-git` exposes this transaction,
+while normal landing, `hop sync`, and `hop begin` invoke it automatically.
+
 After that local transaction succeeds, Hop attempts a non-forced push of the
 accepted commit to the inferred upstream branch. Remote publication is derived
 and retryable: its failure cannot roll back or corrupt the durable local
-acceptance.
+acceptance. A failed or pending publication does not justify leaving local Git
+dirty: the local branch/index may still be synchronized, with ordinary Git then
+showing the accurate ahead/behind relationship to the upstream.
 
 An existing branch whose tree is older than the claimed visible Hop projection
 creates an information-theoretic ambiguity: the filesystem alone cannot prove

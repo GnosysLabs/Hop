@@ -126,12 +126,31 @@ the divergence intentionally; do not replace this with a force-push.
 
 ## Raw Git status shows many changes after landing
 
-Run `hop status`. A synchronized root with
-`git.projection_only_changes=true` is normal: Hop materialized the accepted tree
-while preserving the older active branch and real index. Do not reset,
-checkout, stash, or recommit those projected paths. Only the
-`git.user_worktree_*` and `git.user_index_*` fields represent genuine user
-changes.
+Run `hop status`, then:
+
+```bash
+hop sync-git
+```
+
+A normal safe landing aligns the intended attached branch/index and leaves raw
+Git status clean. If `git.projection_only_changes=true` remains, those paths
+are still projection output—not uncommitted user work. `hop sync-git` prints
+one exact blocking reason and a safe next action. Do not reset, checkout, stash,
+or recommit projected paths. Only `git.user_worktree_*` and
+`git.user_index_*` represent genuine changes.
+
+Synchronization intentionally blocks for a visible-tree mismatch, staged or
+unreadable index, detached or wrong branch, local commits/divergence, merge,
+rebase, cherry-pick, revert or bisect state, Git lock, missing durable branch
+provenance, invalid authorization proof, or a concurrent validation change.
+Preserve everything and follow the printed action. Re-running `hop sync-git`
+is safe and idempotent.
+
+Repositories upgraded from v1.1.2 can infer the intended branch from a durable
+publication destination when it exactly matches the currently attached branch.
+An older local-only state without a durable branch or matching publication ref
+is intentionally not guessed; create and land a fresh proposal on the intended
+branch to establish that proof.
 
 ## A secret was pasted
 

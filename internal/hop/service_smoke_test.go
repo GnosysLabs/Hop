@@ -2108,7 +2108,7 @@ func TestOverlappingProposalAndFailedFinalCheckDoNotMoveHead(t *testing.T) {
 	}
 }
 
-func TestLandMaterializesVisibleRootWithoutMovingGitState(t *testing.T) {
+func TestLandMaterializesVisibleRootAndSafelyFastForwardsGitState(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	runGitTest(t, root, "init", "--quiet")
@@ -2138,7 +2138,6 @@ func TestLandMaterializesVisibleRootWithoutMovingGitState(t *testing.T) {
 
 	beforeHead := runGitTest(t, root, "rev-parse", "HEAD")
 	beforeBranch := runGitTest(t, root, "symbolic-ref", "--short", "HEAD")
-	beforeIndex := runGitTest(t, root, "ls-files", "--stage")
 	result, err := service.Land(ctx, proposal.Proposal.ID, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -2146,14 +2145,20 @@ func TestLandMaterializesVisibleRootWithoutMovingGitState(t *testing.T) {
 	if result.MaterializedRoot != service.Root {
 		t.Fatalf("materialized root = %q, want %q", result.MaterializedRoot, service.Root)
 	}
-	if got := runGitTest(t, root, "rev-parse", "HEAD"); got != beforeHead {
-		t.Fatalf("HEAD moved from %s to %s", beforeHead, got)
+	if got := runGitTest(t, root, "rev-parse", "HEAD"); got != result.State.GitCommit {
+		t.Fatalf("HEAD = %s, want accepted commit %s (previously %s)", got, result.State.GitCommit, beforeHead)
 	}
 	if got := runGitTest(t, root, "symbolic-ref", "--short", "HEAD"); got != beforeBranch {
 		t.Fatalf("branch changed from %s to %s", beforeBranch, got)
 	}
-	if got := runGitTest(t, root, "ls-files", "--stage"); got != beforeIndex {
-		t.Fatalf("real index changed:\nwant %s\n got %s", beforeIndex, got)
+	if got := runGitTest(t, root, "write-tree"); got != result.State.SourceTree {
+		t.Fatalf("real index tree = %s, want accepted tree %s", got, result.State.SourceTree)
+	}
+	if got := runGitTest(t, root, "status", "--porcelain=v1"); got != "" {
+		t.Fatalf("raw Git status after safe landing = %q", got)
+	}
+	if result.GitSync == nil || result.GitSync.Status != "synchronized" {
+		t.Fatalf("Git synchronization result = %#v", result.GitSync)
 	}
 	if contents, err := os.ReadFile(filepath.Join(root, "base.txt")); err != nil || string(contents) != "landed\n" {
 		t.Fatalf("base.txt = %q, err=%v", string(contents), err)
@@ -2244,10 +2249,14 @@ func TestStatusExplainsProjectionOverStaleBranchWithoutCallingItUserWork(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	staleHead := runGitTest(t, service.Root, "rev-parse", "HEAD")
+	branchRef := runGitTest(t, service.Root, "symbolic-ref", "HEAD")
 	landed, err := service.Land(ctx, proposal.Proposal.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	runGitTest(t, service.Root, "update-ref", branchRef, staleHead, landed.State.GitCommit)
+	runGitTest(t, service.Root, "read-tree", staleHead)
 	beforeHead := runGitTest(t, service.Root, "rev-parse", "HEAD")
 	beforeIndex := runGitTest(t, service.Root, "ls-files", "--stage")
 	beforeRefs := runGitTest(t, service.Root, "show-ref")
@@ -2796,6 +2805,9 @@ func TestLandRejectsUnprovenVisibleRootOverStaleBranch(t *testing.T) {
 	// Reproduce the 1.0.10 incident: the durable materialized marker still says
 	// the root is accepted A, while an external stale-branch projection replaces
 	// the visible files with B. Two genuine visible edits are then made on B.
+	branchRef := runGitTest(t, service.Root, "symbolic-ref", "HEAD")
+	runGitTest(t, service.Root, "update-ref", branchRef, initial.GitCommit, accepted.State.GitCommit)
+	runGitTest(t, service.Root, "read-tree", initial.SourceTree)
 	if err := service.Repo.MaterializeTree(ctx, accepted.State.SourceTree, initial.SourceTree); err != nil {
 		t.Fatal(err)
 	}

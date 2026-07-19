@@ -56,6 +56,7 @@ hop env <prompt-state>
 hop prompt --from <state> "<exact follow-up prompt>"
 hop accept <proposal> -- <final validation command>
 hop sync
+hop sync-git
 hop undo
 ```
 
@@ -94,6 +95,7 @@ hop complete --summary "<summary>" --heredoc "$HOP_STATE_ID"
 hop gc
 hop refresh <proposal-state>
 hop push
+hop sync-git
 ```
 
 An adapter may set `HOP_AGENT=<runtime>` or pass `--agent <runtime>`. If it has
@@ -140,14 +142,20 @@ genuine overlaps enter the same agent reconciliation flow. When an existing
 branch's tree differs from Hop's claimed materialized tree, changed visible
 files are ambiguous and capture fails closed instead of authorizing the whole
 filesystem diff. Staged/index state and ignored destination collisions remain
-protected. Materialization uses a disposable index and never moves HEAD, the
-active branch, or the user's real index.
+protected. Materialization writes visible files through a disposable index.
+Once the visible tree is durably recorded, Hop separately fast-forwards the
+intended attached local branch and replaces only its projection-only real index
+when every safety precondition is revalidated. It never uses `reset --hard`,
+forces a ref, or rewrites the already-correct visible files.
 
-This means raw `git status` is not an authoritative description of user work in
-the visible root. When the accepted tree is projected over an older branch or
-index, Git reports the projection as dirtiness. Use `hop status --json`: its
+Ordinary `git status` should therefore be clean after a safely synchronized
+landing. It is still not authoritative for classifying a remaining stale
+projection: when Hop cannot prove branch/index synchronization safe, Git
+reports the projection as dirtiness. Use `hop status --json`: its
 `git.projection_only_changes`, `git.user_worktree_changed`, and
 `git.user_index_changed` fields distinguish the projection from genuine edits.
+Use `hop sync-git` for an idempotent repair attempt and a precise blocking
+reason. Never call projection-only paths uncommitted user work.
 
 When either the accepted-state merge or the fetched upstream-branch merge has
 genuine unresolved conflicts, `hop land` returns exit `20` and automatically
@@ -167,7 +175,10 @@ explicit form of the same preparation step.
 `hop accept` is the controller/kernel operation. It advances SQLite and
 `refs/hop/accepted` but intentionally leaves the visible root untouched.
 `hop sync` safely catches a stale accepted-ancestor root up to the current
-accepted state, including projects created with older Hop builds.
+accepted state, including projects created with older Hop builds, then attempts
+the same safe Git synchronization. `hop sync-git` never materializes files; it
+only aligns the proven attached branch/index with an already-correct accepted
+tree. `hop status` remains read-only.
 
 After every successful `hop land` or `hop accept`, Hop automatically performs a
 non-forced push of the accepted commit when the active branch has an
@@ -224,7 +235,7 @@ protocol and must not be required for repositories hosted elsewhere.
 | `20` | Genuine three-way merge conflict; reconciliation workspace prepared |
 | `21` | Accepted or attempt head changed during compare-and-swap |
 | `22` | Validation command failed |
-| `23` | Visible project root diverged or contains an overwrite collision |
+| `23` | Visible project root diverged, contains an overwrite collision, or explicit Git synchronization was blocked |
 | `24` | Exact-tree provenance or authorization-manifest verification failed |
 
 A failed `hop check` or final landing check persists its evidence. A blocked or failed landing does not advance accepted state.
@@ -274,6 +285,9 @@ provide the same boundary inside compatible agent clients.
   product ambiguity, not ordinary textual overlap.
 - **Visible-root edits:** `hop land` captures ordinary nonignored edits and merges them automatically. Continue through any returned reconciliation. For protected staged/index state or ignored collisions, preserve the proposal and user files; never substitute controller-only `hop accept`.
 - **Controller-accepted root is stale:** run `hop sync`; it succeeds only from an accepted ancestor and never overwrites divergence.
+- **Projection-only Git dirtiness:** consult `hop status --json`, then run
+  `hop sync-git`. Follow its exact safe action; never reset, stash, recommit, or
+  describe projection-only paths as user edits.
 - **Automatic push warning:** retry once with `hop push`; preserve a diverged remote and never force-push it.
 - **Ref inconsistency:** run `hop doctor`; use `hop doctor --repair` only outside final validation.
 - **Secrets:** Hop redacts high-confidence provider keys plus contextual tokens,

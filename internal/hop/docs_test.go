@@ -143,6 +143,30 @@ func TestAgentSkillDocumentsHostAwareCommands(t *testing.T) {
 	}
 }
 
+func TestAgentSkillClassifiesStaleProjectionThroughHop(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	for _, relative := range []string{
+		"skills/hop/SKILL.md",
+		"skills/hop/references/protocol.md",
+		"wiki/Troubleshooting.md",
+	} {
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(contents)
+		if !strings.Contains(text, "hop status") || !strings.Contains(text, "hop sync-git") {
+			t.Errorf("%s does not route stale-projection diagnosis through Hop", relative)
+		}
+		lower := strings.ToLower(strings.Join(strings.Fields(text), " "))
+		if !strings.Contains(lower, "not uncommitted user work") &&
+			!strings.Contains(lower, "never describe those paths as user edits or uncommitted work") &&
+			!strings.Contains(lower, "never call projection-only paths uncommitted user work") {
+			t.Errorf("%s does not forbid calling projection-only paths user work", relative)
+		}
+	}
+}
+
 func TestReleaseIncludesTeaLicenseNotice(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	notice, err := os.ReadFile(filepath.Join(root, "THIRD_PARTY_NOTICES.md"))

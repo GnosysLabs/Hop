@@ -43,6 +43,10 @@ type Repository struct {
 	commonGitDir string
 	store        *GitStore
 	auth         *AuthClient
+	// syncGitBeforeFinalValidation is test-only fault injection. Production
+	// repositories leave it nil.
+	syncGitBeforeFinalValidation func()
+	syncGitAfterRefUpdate        func()
 }
 
 // GitError reports a failed Git invocation without exposing its environment.
@@ -1243,12 +1247,11 @@ func (r *Repository) CheckIndexSafe(ctx context.Context, visibleTree string) err
 }
 
 func (r *Repository) userIndexTree(ctx context.Context) (string, error) {
-	indexPath := filepath.Join(r.gitDir, "index")
-	if _, err := os.Stat(indexPath); errors.Is(err, os.ErrNotExist) {
-		return r.EmptyTree(ctx)
-	} else if err != nil {
-		return "", fmt.Errorf("inspect real Git index: %w", err)
+	indexPath, cleanup, err := r.temporaryIndex(true)
+	if err != nil {
+		return "", err
 	}
+	defer cleanup()
 	output, err := r.run(ctx, []string{
 		"GIT_INDEX_FILE=" + indexPath,
 		"GIT_OPTIONAL_LOCKS=0",

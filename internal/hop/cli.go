@@ -38,6 +38,7 @@ Usage:
   hop refresh PROPOSAL
   hop export [--output PATH]
   hop sync
+  hop sync-git
   hop gc [--older-than DURATION | --all]
   hop push
   hop push-tag TAG
@@ -289,6 +290,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			if begin.Cleanup != nil && (begin.Cleanup.Parked > 0 || begin.Cleanup.Removed > 0) {
 				printWorkspaceCleanup(stdout, begin.Cleanup)
 			}
+			printGitSync(stdout, result.GitSync)
 			for _, warning := range begin.Warnings {
 				fmt.Fprintf(stderr, "Warning: %s\n", warning)
 			}
@@ -505,6 +507,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 				fmt.Fprintf(stdout, "Captured concurrent visible-root changes as %s\n", result.CapturedRoot.ID)
 			}
 			fmt.Fprintf(stdout, "Synchronized visible root: %s\n", result.MaterializedRoot)
+			printGitSync(stdout, result.GitSync)
 			printRemotePush(stdout, result.RemotePush)
 			printPromptSync(stdout, result.PromptSync)
 			if result.Check == nil {
@@ -545,10 +548,35 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			} else {
 				fmt.Fprintf(stdout, "Visible root already matches accepted state %s\n", result.State.ID)
 			}
+			printGitSync(stdout, result.GitSync)
 			printPromptSync(stdout, result.PromptSync)
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(stderr, "Warning: %s\n", warning)
 			}
+		}
+
+	case "sync-git":
+		if len(commandArgs) != 0 {
+			fmt.Fprintln(stderr, "usage: hop sync-git")
+			return 2
+		}
+		result, err := service.SyncGit(ctx)
+		value = result
+		if err != nil {
+			return printCLIError(err, jsonOutput, stdout, stderr)
+		}
+		if result.Status == "blocked" {
+			if jsonOutput {
+				writeJSON(stdout, map[string]any{
+					"ok": false, "category": "git_sync_blocked", "exit_code": 23, "data": result,
+				})
+			} else {
+				printGitSync(stdout, &result)
+			}
+			return 23
+		}
+		if !jsonOutput {
+			printGitSync(stdout, &result)
 		}
 
 	case "push":
@@ -1259,6 +1287,32 @@ func printRemotePush(w io.Writer, result *RemotePushResult) {
 		return
 	}
 	fmt.Fprintf(w, "Pushed accepted commit to %s/%s\n", result.Remote, strings.TrimPrefix(result.Ref, "refs/heads/"))
+}
+
+func printGitSync(w io.Writer, result *GitSyncResult) {
+	if result == nil {
+		return
+	}
+	switch result.Status {
+	case "synchronized":
+		if result.Reason == "" {
+			fmt.Fprintf(w, "Git branch/index synchronized: %s now points to %s; ordinary git status is clean\n", result.BranchRef, shortHash(result.AcceptedCommit))
+		} else {
+			fmt.Fprintf(w, "Git branch/index synchronized, but a new change appeared afterward: %s\n", result.Reason)
+			if result.SafeNextAction != "" {
+				fmt.Fprintf(w, "Safe next action: %s\n", result.SafeNextAction)
+			}
+		}
+	case "already_synchronized":
+		fmt.Fprintln(w, "Git branch/index already synchronized; ordinary git status is clean")
+	case "not_applicable":
+		fmt.Fprintf(w, "Git synchronization not needed: %s\n", result.Reason)
+	case "blocked":
+		fmt.Fprintf(w, "Git synchronization blocked: %s\n", result.Reason)
+		if result.SafeNextAction != "" {
+			fmt.Fprintf(w, "Safe next action: %s\n", result.SafeNextAction)
+		}
+	}
 }
 
 func printPromptSync(w io.Writer, result *PromptSyncResult) {

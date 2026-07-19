@@ -54,6 +54,9 @@ uses it as the default session and identifies the runtime as `codex` unless
 - Checkpoint prior workspace effects and append follow-ups until that work lands.
 - Follow a reconciliation into its fresh attempt, then start the first prompt
   after landing from the latest accepted state instead of reopening old work.
+- Repair a proven accepted-tree projection by fast-forwarding the intended
+  attached branch and replacing only its projection-only index. If any safety
+  condition is not provable, preserve everything and report the exact block.
 - Redact detected API keys, tokens, passwords, private keys, authorization
   headers, and credential-bearing connection strings before persistence.
 
@@ -95,11 +98,14 @@ hop state <HOP_STATE_ID> --json
 hop status --json
 ```
 
-Treat `hop status --json` as authoritative for the selected visible root. Hop
-intentionally projects the accepted tree without moving the active branch or
-real index, so raw `git status` may show a large dirty tree that is entirely
-projection-only. Never describe those paths as user edits unless Hop reports
-`git.user_worktree_changed` or `git.user_index_changed`.
+Treat `hop status --json` as authoritative for the selected visible root. A
+successful landing normally leaves the intended local branch/index aligned and
+raw `git status` clean. If Hop cannot prove that transition safe, raw Git may
+still show a large projection-only diff. Never describe those paths as user
+edits or uncommitted work unless Hop reports `git.user_worktree_changed` or
+`git.user_index_changed`. Run `hop sync-git` for the exact blocking reason and
+safe next action; never use reset, checkout, stash, or an ad hoc commit to hide
+a projection.
 If `accepted_provenance` is `invalid`, stop acceptance and run `hop doctor`.
 `legacy_unverified` identifies a transition created before durable manifests;
 make a fresh proposal rather than treating it as current proof.
@@ -202,8 +208,10 @@ hosts.
 8. Report the accepted result, validation, and remaining risks. Keep internal
    state and evidence IDs out of the normal response unless they help explain a
    failure or the user asks for them. Confirm that `hop land` reported the
-   selected visible project root as synchronized. Inspect its durable
-   publication state. If it is `failed` and retryable, retry once with
+   selected visible project root as synchronized. Also inspect the landing's
+   Git synchronization result. A blocked branch/index sync does not make the
+   projection user work: preserve it, follow the printed safe action, and use
+   `hop sync-git` to retry. Inspect durable publication state. If it is `failed` and retryable, retry once with
    `hop push`; never force-push or ask the user to perform routine
    source-control mechanics. A `diverged` failure requires Hop reconciliation,
    not repeated pushes.

@@ -41,7 +41,9 @@ Before reading or changing project files, the agent runs `hop begin`. Hop then:
 - keeps all project-changing work inside that workspace.
 
 The agent validates, proposes, and lands the result. A successful `hop land`
-updates the visible project folder to the accepted tree.
+updates the visible project folder to the accepted tree and, when every safety
+condition is provable, fast-forwards the intended attached local branch/index
+without rewriting those files. Ordinary `git status --porcelain` is then clean.
 
 ## Confirm the result
 
@@ -54,6 +56,8 @@ hop doctor
 ```
 
 A normal interactive result reports `Root: synchronized`.
+If Git synchronization was blocked, run `hop sync-git` for the exact reason and
+safe next action; do not treat projection-only paths as uncommitted work.
 
 If the active Git branch has an upstream—or the repository has one unambiguous
 `origin`/single-remote destination—landing also fast-forward pushes the accepted

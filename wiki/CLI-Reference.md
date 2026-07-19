@@ -35,6 +35,7 @@ release.
 |---|---|
 | `hop accept PROPOSAL [-- COMMAND...]` | Accept internally without changing visible files |
 | `hop sync` | Materialize the accepted tree and retry authenticated private prompt sync |
+| `hop sync-git` | Safely align the intended attached branch/index to an already-materialized accepted tree |
 | `hop export [--output PATH]` | Write a private local prompt export to ignored `.hop/records/prompts/` |
 | `hop push` | Safely retry a pending/failed accepted-state publication; never force-push |
 | `hop undo` | Create a forward-only acceptance that restores the previous accepted tree |
@@ -71,12 +72,24 @@ Hop's private same-forge Git fetch and push operations.
 
 `hop status` is read-only with respect to refs, HEAD, the real index, and the
 working tree. Its JSON separates the accepted tree projected into the visible
-root from the active branch and index. `git.projection_only_changes=true` means
-raw Git dirtiness is expected projection output, not uncommitted user work.
+root from the active branch and index. A safe landing normally makes ordinary
+Git status clean. If `git.projection_only_changes=true` remains, raw Git
+dirtiness is projection output, not uncommitted user work. Run `hop sync-git`
+for an idempotent repair attempt, exact blocking reason, and safe next action.
 `git.user_worktree_paths` and `git.user_index_paths` contain filesystem/index
 differences, while `accepted_provenance` reports whether the accepted
 transition's exact-tree authorization proof is `verified`,
 `legacy_unverified`, or `invalid`.
+
+`hop sync-git` holds Hop's acceptance lock, revalidates the visible-tree and
+durable-state proofs, rejects detached/wrong branches, local commits,
+divergence, staged or visible changes, Git operations, and lock files, then
+uses a compare-and-swap fast-forward and atomic index replacement. It never
+materializes files, force-updates a ref, or invokes `reset --hard`. It also runs
+automatically after normal landing/materialization and after prompt capture in
+`hop begin` so safely repairable older projections self-heal. Publication may
+still be pending or failed: the local branch remains clean and ordinary Git
+reports its truthful relationship to the upstream.
 
 Publication is `not_configured`, `pending`, `current`, `failed`, or `unknown`
 for a pre-migration accepted state. Failures retain a sanitized error category,
@@ -157,7 +170,7 @@ existing installations.
 | `20` | Merge conflict; reconciliation workspace was prepared |
 | `21` | Attempt or accepted head changed during compare-and-swap |
 | `22` | Validation command failed |
-| `23` | Visible-root divergence or overwrite collision |
+| `23` | Visible-root divergence, overwrite collision, or explicit Git synchronization safety block |
 
 Exit `20` is a continuation signal for an agent, not a request for the user to
 manually merge files.

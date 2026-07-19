@@ -235,6 +235,10 @@ func (s *Service) BeginPrompt(ctx context.Context, message, fromStateID, agent, 
 			return PromptResult{}, err
 		}
 	}
+	// Prompt persistence remains the first project effect. Once it is durable,
+	// opportunistically repair a proven projection-only branch/index before the
+	// agent begins work in its isolated workspace.
+	result.GitSync = s.trySyncGit(ctx)
 	return result, nil
 }
 
@@ -1481,6 +1485,9 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	if err != nil {
 		return AcceptResult{}, err
 	}
+	if err := s.bindProvenanceBranch(ctx, provenance); err != nil {
+		return AcceptResult{}, err
+	}
 	accepted := State{
 		ID:                acceptedID,
 		Kind:              StateAccepted,
@@ -1541,6 +1548,12 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 			return result, &CommittedStateError{State: accepted, Err: fmt.Errorf("record visible root synchronization: %w", err)}
 		}
 		result.MaterializedRoot = s.Root
+		gitSync, syncErr := s.syncGitLocked(ctx, accepted)
+		if syncErr != nil {
+			result.Warnings = append(result.Warnings, "accepted tree is safe, but Git branch/index synchronization failed: "+syncErr.Error())
+		} else {
+			result.GitSync = &gitSync
+		}
 	}
 	s.attachAutomaticPush(ctx, &result)
 	s.attachPromptCloudSync(ctx, &result.PromptSync, &result.Warnings)
@@ -1620,6 +1633,9 @@ func (s *Service) captureVisibleRoot(ctx context.Context) (*State, []string, err
 		Role: "visible_root", StateID: materialized.ID, BaseTree: materialized.SourceTree, CandidateTree: actualTree,
 	}}, "capture-visible-root")
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.bindProvenanceBranch(ctx, provenance); err != nil {
 		return nil, nil, err
 	}
 	// The project lock serializes Hop, not arbitrary editors or Git commands.
@@ -2131,12 +2147,19 @@ func (s *Service) syncLocked(ctx context.Context) (SyncResult, error) {
 	if err := s.Store.CASMaterializedHead(ctx, rootBase.ID, current.ID); err != nil {
 		return SyncResult{}, fmt.Errorf("record visible root synchronization: %w", err)
 	}
-	return SyncResult{
+	result := SyncResult{
 		State:     current,
 		Root:      s.Root,
 		FromState: rootBase.ID,
 		Changed:   changed,
-	}, nil
+	}
+	gitSync, syncErr := s.syncGitLocked(ctx, current)
+	if syncErr != nil {
+		result.Warnings = append(result.Warnings, "visible tree is safe, but Git branch/index synchronization failed: "+syncErr.Error())
+	} else {
+		result.GitSync = &gitSync
+	}
+	return result, nil
 }
 
 func (s *Service) prepareRootMaterialization(ctx context.Context, targetTree string) (State, error) {
@@ -2258,6 +2281,9 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	if err := s.bindProvenanceBranch(ctx, provenance); err != nil {
+		return State{}, err
+	}
 	undo := State{
 		ID:                undoID,
 		Kind:              StateAccepted,
@@ -2292,6 +2318,10 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 		postCommitErrors = append(postCommitErrors, fmt.Errorf("visible root %s was not synchronized: %w", s.Root, err))
 	} else if err := s.Store.CASMaterializedHead(ctx, rootBase.ID, undo.ID); err != nil {
 		postCommitErrors = append(postCommitErrors, fmt.Errorf("record visible root synchronization: %w", err))
+	} else if gitSync, syncErr := s.syncGitLocked(ctx, undo); syncErr != nil {
+		postCommitErrors = append(postCommitErrors, fmt.Errorf("synchronize Git branch/index: %w", syncErr))
+	} else if explanation := gitSyncExplanation(gitSync); explanation != "" {
+		postCommitErrors = append(postCommitErrors, errors.New(explanation))
 	}
 	if _, _, err := s.publishAccepted(ctx, undo); err != nil {
 		postCommitErrors = append(postCommitErrors, fmt.Errorf("automatic push failed and remains pending: %w", err))

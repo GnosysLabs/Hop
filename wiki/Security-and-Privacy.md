@@ -66,14 +66,18 @@ revoke provider account tokens.
 
 ## Filesystem safety
 
-Hop does not use `reset --hard`, move the active branch, or write the user's
-real Git index. Ordinary nonignored visible-root edits can be captured when the
-active branch/index tree proves the materialized base. If the visible Hop tree
+Hop does not use `reset --hard`, force a ref, or rewrite visible files while
+synchronizing Git. It may fast-forward the recorded attached branch and
+atomically replace a proven projection-only real index after revalidating the
+visible accepted tree, ancestry, locks, operations, and durable Hop state.
+Ordinary nonignored visible-root edits can be captured when the active
+branch/index tree proves the materialized base. If the visible Hop tree
 is projected over a genuinely different stale branch tree, implicit capture is
 blocked: Hop cannot safely distinguish deliberate edits from an external stale
 checkout and will not infer mass changes or deletions. Synchronization also
 remains fail-closed for ignored destinations, staged/index state, and
-filesystem races.
+filesystem and ref races. If any condition is unprovable, Hop preserves the
+branch, index, and files and returns the exact blocking reason and safe action.
 
 New checkpoints, proposals, captures, reconciliation results, remote
 compositions, lands, accepts, retries, and undos carry exact-tree authorization
