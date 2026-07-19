@@ -195,35 +195,20 @@ Hop never creates, rotates, lists, or revokes provider access tokens. Agents
 must not use account token-management APIs or settings pages as a shortcut for
 publishing work.
 
-For a repository hosted on `githop.xyz`, run `hop auth status` and use
-`hop auth login https://githop.xyz` when authentication is absent, expired, or
-revoked. When status succeeds, do not open a separate Gitea login page. This
-device-global OAuth grant is the intended credential for all in-scope work on
-the matching forge: prompt sync; Git fetch, push, and tags; repository creation;
-issues, comments, pull requests, releases, and other API operations against
-public and private repositories. Hop stores the grant in the OS keychain and
-refreshes it automatically.
+Run `hop host` to discover the repository's provider. Core Hop publication uses
+normal Git remotes and credentials and therefore works with GitHub, GitLab,
+Gitea, generic Git servers, and local bare repositories. Preserve the configured
+remote unless the user explicitly asks to replace it.
 
-Use typed commands such as `hop repo create --private OWNER/REPOSITORY` first,
-`hop forge api` for other same-forge Gitea API operations, and `hop auth exec`
-when an established child tool requires the OAuth token in an environment
-variable. Never print or persist that variable. Hop applies HTTPS OAuth per Git
-operation without changing an SSH-form or HTTPS remote unless the user
-explicitly asks to change the publishing destination.
+Host-aware collaboration commands delegate to `gh` on GitHub, `glab` on GitLab,
+and the embedded compatibility adapter on Gitea. Use an existing provider CLI
+or OS-keychain credential. Do not request, create, rotate, enumerate, revoke,
+print, or persist an access token. If authentication is absent, ask the user to
+complete the provider's normal login flow; never mint a task-named token.
 
-The Hop binary also provides the Gitea command families `clone`, `whoami`,
-`issues`, `pulls`, `labels`, `milestones`, `releases`, `times`, `organizations`,
-`repos`, `branches`, `actions`, `wiki`, `webhooks`, `comments`, `open`,
-`notifications`, `ssh-keys`, `admin`, `api`, and `man`. They use the current Hop
-OAuth session automatically and require neither a Tea installation nor a Tea
-login/config file.
-
-Do not request or create a personal access token, place a token in a URL or Git
-configuration, or substitute a server-wide credential for a private repository.
-For another forge, a release or publishing task may use only a pre-existing
-credential the user deliberately provisioned through an OS secret store or the
-runtime's secret mechanism. When that credential is absent or invalid, stop and
-ask the user to replace it; never mint a task-named token.
+Gitea's legacy `hop auth`, `hop forge api`, and embedded Tea-compatible commands
+remain available as a compatibility adapter. They are not part of the core Git
+protocol and must not be required for repositories hosted elsewhere.
 
 ## Exit codes
 

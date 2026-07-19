@@ -101,74 +101,52 @@ real index, so raw `git status` may show a large dirty tree that is entirely
 projection-only. Never describe those paths as user edits unless Hop reports
 `git.user_worktree_changed` or `git.user_index_changed`.
 
-## Authenticate to githop.xyz with Hop OAuth
+## Use the repository's Git host
 
-For repositories hosted on `githop.xyz`, the intended authentication method is:
-
-```bash
-hop auth login https://githop.xyz
-```
-
-Check `hop auth status` first. If the account is not authenticated, run the
-login command and let the user approve the browser authorization. Treat this
-device-global OAuth grant as the user's authorization for Hop to access their
-Gitea account. Hop stores it in the OS keychain and refreshes it automatically.
-When status succeeds for the matching forge, do not open a standalone Gitea
-login page or ask the user to sign in again.
-
-Use this OAuth grant by default for every in-scope operation on the matching
-forge: prompt sync; Git fetch, push, and tags; repository creation and settings;
-issues, comments, pull requests, releases, and other Gitea API work. Prefer a
-typed Hop command when one exists. This applies to both public and private
-repositories. For example, create a private repository and configure it as the
-publishing destination with:
+Hop's core workflow is forge-neutral. Inspect the configured destination with:
 
 ```bash
-hop repo create --private --replace-remote OWNER/REPOSITORY
+hop host
 ```
 
-Hop also ships native, OAuth-authenticated Gitea command families. Use these
-directly; do not invoke or install Tea:
+Fetch, automatic push, and tag publication use the repository's normal Git
+remote and credential helper. They work with GitHub, GitLab, Gitea, any other
+Git server, or a local bare remote. Do not change the remote unless the user
+explicitly asks to change the publishing destination.
+
+For optional issue, pull-request, release, or repository operations, use Hop's
+host-aware command surface. GitHub commands delegate to the user's existing
+authenticated `gh` CLI, GitLab commands delegate to `glab`, and Gitea uses the
+embedded compatibility adapter. Examples:
 
 ```text
-hop clone             hop whoami           hop issues / issue / i
-hop pulls / pull / pr hop labels            hop milestones
-hop releases          hop times             hop organizations / orgs
-hop repos             hop branches          hop actions
-hop wiki              hop webhooks          hop comments
-hop open              hop notifications     hop ssh-keys / ssh-key
-hop admin             hop api               hop man
+hop issues list
+hop pulls list
+hop releases list
+hop repos view
 ```
 
-Each family retains its established subcommands and flags, such as
-`hop issues list`, `hop comments add`, `hop pulls checkout`,
-`hop releases create`, and `hop repos create`. Run `hop COMMAND --help` for the
-complete surface. `hop login` and `hop logout` are convenient aliases for Hop's
-OAuth login and logout; they never create a separate Tea credential.
+The portable command families are `hop clone`, `hop whoami`, `hop issues`,
+`hop pulls`, `hop labels`, `hop releases`, `hop repos`, `hop actions`,
+`hop open`, `hop notifications`, `hop ssh-keys`, and `hop api`.
 
-Use `--replace-remote` only when the user asked to change an existing remote.
-After landing, Hop's normal authenticated push publishes the accepted code. For
-Gitea operations without a typed command, call the same-forge API without
-handling the token yourself:
+If the required provider CLI is absent or signed out, explain the one normal
+provider login command, such as `gh auth login`; never create an access token,
+visit a token-management page, or ask the user to paste a token. Use only
+credentials the user deliberately provisioned through the provider CLI, OS
+keychain, Git credential helper, or runtime secret mechanism.
+
+Create a repository on an explicitly selected provider with:
 
 ```bash
-hop forge api --method PATCH --data '{"state":"closed"}' \
-  /api/v1/repos/OWNER/REPOSITORY/issues/NUMBER
+hop repo create --host github --private --replace-remote OWNER/REPOSITORY
 ```
 
-When an established forge tool requires an environment token, run it through
-`hop auth exec --env GITEA_TOKEN -- COMMAND [ARG...]`. Never print that variable
-or write it to a file. Hop redacts the token from the child process's captured
-stdout and stderr. Preserve the user's configured remote, including SSH-form
-remotes, unless their request explicitly changes the publishing destination;
-Hop applies HTTPS OAuth only for each Git operation.
-
-Do not ask for or create a personal access token, embed a token in a URL or Git
-configuration, or fall back to a server-wide credential merely because a
-repository is private. If the OAuth grant is expired or revoked, repeat
-`hop auth login https://githop.xyz`. For other forges, use only credentials the
-user already provisioned through an OS secret store or the runtime's secret
-mechanism; never call a token-management endpoint.
+Use `--replace-remote` only when the user asked to change an existing remote.
+After landing, Hop's normal authenticated Git push publishes the accepted code.
+Gitea's legacy `hop auth`/`hop forge api` adapter remains available for existing
+installations, but it is not required by Hop and must not be assumed for other
+hosts.
 
 ## Execute and auto-accept
 

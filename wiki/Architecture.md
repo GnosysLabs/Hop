@@ -56,4 +56,4 @@ and retryable: its failure cannot roll back or corrupt the durable local
 acceptance.
 
 For the full product direction, read the
-[product blueprint](https://githop.xyz/GnosysLabs/Hop/src/branch/main/docs/product-blueprint.md).
+[product blueprint](../docs/product-blueprint.md).

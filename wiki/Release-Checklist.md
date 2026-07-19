@@ -1,38 +1,19 @@
 # Release checklist
 
-Hop releases are built on a trusted maintainer machine and uploaded by
-GoReleaser as draft Gitea Releases. Gitea Actions and act runners are not
-required; the server only stores source, tags, release metadata, and assets.
+Hop releases are built on a trusted maintainer machine and uploaded as draft
+GitHub Releases. GitHub Actions is not required.
 
-The canonical repository is `githop.xyz/GnosysLabs/Hop`.
+The canonical repository is `github.com/GnosysLabs/Hop`.
 
-## One-time Gitea setup
+## One-time setup
 
-- Create the `GnosysLabs/Hop` repository and set its default branch to `main`.
-- Configure `origin` as `https://githop.xyz/GnosysLabs/Hop.git`.
-- Keep Gitea Actions disabled when the instance does not have dedicated runner
-  capacity; Hop's release process does not depend on it.
-- Sign in with `hop auth login https://githop.xyz`. The local release script
-  passes that existing OAuth grant to GoReleaser through `hop auth exec` without
-  exposing it in argv. Agents and release scripts must never create, rotate,
-  list, or revoke account tokens through Gitea's website or API.
-- When upgrading GoReleaser, update its pinned version and four archive
-  checksums in `scripts/release-local.sh` from the official checksum file.
-- Permit release attachment MIME types for `.tar.gz`, `.zip`, and `.txt` in
-  Gitea's `[attachment] ALLOWED_TYPES` configuration.
-- Enable the repository wiki, then push the files in `wiki/` to its wiki Git
-  repository.
-
-## Public-launch gates
-
-- Choose and add a `LICENSE`. The local publishing script intentionally fails
-  without one; this is a product/legal decision, not a build default.
-- Add `SECURITY.md` with a monitored private disclosure address.
-- Create an offline-controlled release-signing key, publish its public key, and
-  add detached signing for `checksums.txt` before general availability.
-- Confirm the `githop.xyz/GnosysLabs/Hop` Go import path serves valid `go-import`
-  metadata.
-- Back up the Gitea database, repositories, and release attachments.
+- Configure `origin` as `https://github.com/GnosysLabs/Hop.git` or its SSH
+  equivalent and set the default branch to `main`.
+- Install `gh`, run `gh auth login`, and keep its credential in the OS keychain.
+- Agents and release scripts must never create, rotate, list, or revoke account
+  tokens.
+- When upgrading GoReleaser, update its pinned version and archive checksums in
+  `scripts/release-local.sh` from the official checksum file.
 
 ## Validate before tagging
 
@@ -40,26 +21,20 @@ The canonical repository is `githop.xyz/GnosysLabs/Hop`.
 scripts/release-local.sh --snapshot
 ```
 
-Inspect `dist/` and test at least one archive on each operating system family.
-Confirm `hop version` reports the snapshot/tag-injected version and
-`hop skill install --force` installs identical Hop-managed files at all three
-default skill destinations while preserving unrelated user files.
+Inspect `dist/` and test representative archives. Confirm `hop version` reports
+the injected version and `hop skill install --force` refreshes the embedded
+skill bundles.
 
 ## Create a release
 
-1. Update release notes. The signed Git tag is the version source and is
-   injected into the binaries automatically.
-2. Run `scripts/release-local.sh --snapshot` and inspect the artifacts.
-3. Create and verify a signed semantic-version tag such as `v1.0.0`, then
-   publish it without force using `hop push-tag v1.0.0`.
-4. Run `scripts/release-local.sh --publish`. It uses the existing Hop OAuth
-   login, reruns race tests, vet, installer
-   checks, builds six platform archives, generates `checksums.txt`, and uploads
-   a draft without executing build work on the Gitea server.
-5. Download the draft assets and independently verify checksums, version output,
-   skill installation, and a disposable Hop project.
-6. Publish the Gitea draft only after those checks pass.
-7. Test both one-command installers against the now-published release.
+1. Update release notes.
+2. Run the snapshot command and inspect the artifacts.
+3. Create and verify a signed semantic-version tag, then publish it without
+   force using `hop push-tag TAG`.
+4. Run `scripts/release-local.sh --publish`. It validates locally, builds the
+   platform archives, generates `checksums.txt`, and uploads a GitHub draft.
+5. Verify the draft assets, checksums, version output, and a disposable install.
+6. Publish the draft and test both one-command installers.
 
 ## Expected assets
 
@@ -73,11 +48,9 @@ hop_windows_arm64.zip
 checksums.txt
 ```
 
-## After the first release
+## Migration bridge
 
-- Create a Gitea-hosted Homebrew tap/cask fed by immutable release URLs and
-  checksums; do not publish placeholder hashes.
-- Add Windows package-manager metadata only after the Windows artifact has been
-  tested on a real signed build.
-- Establish release retention, package cleanup, rollback, and incident-response
-  procedures for the custom Gitea instance.
+The first GitHub-native release must also be published to the former Gitea
+release feed. Versions through 1.0.10 query that feed for updates; after they
+install the bridge release, `hop update` uses GitHub. The old forge can be
+retired only after this bridge is public and verified.

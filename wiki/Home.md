@@ -28,13 +28,13 @@ automatically.
 macOS or Linux:
 
 ```bash
-curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/GnosysLabs/Hop/main/scripts/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/GnosysLabs/Hop/main/scripts/install.ps1 | iex
 ```
 
 Open a Git project in a compatible agent client and work normally. The installed

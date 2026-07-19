@@ -51,7 +51,7 @@ parked attempts remain resumable even though their workspace directory is gone.
 
 ## The installer cannot find a release
 
-Only published Gitea Releases appear through the public releases API. Drafts
+Only published GitHub Releases appear through the public releases API. Drafts
 and an instance that is not live will return an error; published prereleases
 are supported. Pin an existing tag with `HOP_VERSION`, or use the source build
 until the first release is published.

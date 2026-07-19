@@ -25,16 +25,21 @@ import (
 )
 
 const (
-	defaultUpdateBaseURL    = "https://githop.xyz"
-	defaultUpdateRepository = "GnosysLabs/Hop"
-	maxUpdateArchiveBytes   = 128 << 20
-	maxUpdateChecksumBytes  = 1 << 20
+	defaultUpdateAPIURL      = "https://api.github.com"
+	defaultUpdateDownloadURL = "https://github.com"
+	defaultUpdateRepository  = "GnosysLabs/Hop"
+	maxUpdateArchiveBytes    = 128 << 20
+	maxUpdateChecksumBytes   = 1 << 20
 )
 
 type UpdateOptions struct {
-	Version    string
-	CheckOnly  bool
-	Force      bool
+	Version     string
+	CheckOnly   bool
+	Force       bool
+	APIURL      string
+	DownloadURL string
+	// BaseURL is the deprecated Gitea-compatible endpoint used by pre-1.1
+	// callers and by the one-time migration bridge.
 	BaseURL    string
 	Repository string
 }
@@ -73,12 +78,9 @@ func (u *Updater) Update(ctx context.Context, currentVersion string, options Upd
 	if u.GOARCH == "" {
 		u.GOARCH = runtime.GOARCH
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(options.BaseURL), "/")
-	if baseURL == "" {
-		baseURL = defaultUpdateBaseURL
-	}
-	if parsed, err := url.Parse(baseURL); err != nil || parsed.Scheme != "https" && parsed.Scheme != "http" || parsed.Host == "" {
-		return result, errors.New("hop update: release base URL must be an absolute HTTP(S) URL")
+	apiURL, downloadURL, legacyGitea, err := resolveUpdateEndpoints(options)
+	if err != nil {
+		return result, err
 	}
 	repository := strings.Trim(strings.TrimSpace(options.Repository), "/")
 	if repository == "" {
@@ -89,7 +91,7 @@ func (u *Updater) Update(ctx context.Context, currentVersion string, options Upd
 		return result, errors.New("hop update: repository must be OWNER/NAME")
 	}
 
-	tag, err := u.resolveReleaseTag(ctx, baseURL, repository, options.Version)
+	tag, err := u.resolveReleaseTag(ctx, apiURL, repository, options.Version, legacyGitea)
 	if err != nil {
 		return result, err
 	}
@@ -131,7 +133,7 @@ func (u *Updater) Update(ctx context.Context, currentVersion string, options Upd
 		}
 	}()
 
-	releaseURL := baseURL + "/" + repository + "/releases/download/" + url.PathEscape(tag)
+	releaseURL := downloadURL + "/" + repository + "/releases/download/" + url.PathEscape(tag)
 	archiveBytes, err := u.download(ctx, releaseURL+"/"+asset, maxUpdateArchiveBytes)
 	if err != nil {
 		return result, fmt.Errorf("hop update: download %s: %w", asset, err)
@@ -176,7 +178,40 @@ func (u *Updater) Update(ctx context.Context, currentVersion string, options Upd
 	return result, nil
 }
 
-func (u *Updater) resolveReleaseTag(ctx context.Context, baseURL, repository, requested string) (string, error) {
+func resolveUpdateEndpoints(options UpdateOptions) (apiURL, downloadURL string, legacyGitea bool, err error) {
+	if strings.TrimSpace(options.APIURL) == "" && strings.TrimSpace(options.DownloadURL) == "" && strings.TrimSpace(options.BaseURL) != "" {
+		base := strings.TrimRight(strings.TrimSpace(options.BaseURL), "/")
+		if err := validateUpdateURL(base); err != nil {
+			return "", "", false, err
+		}
+		return base + "/api/v1", base, true, nil
+	}
+	apiURL = strings.TrimRight(strings.TrimSpace(options.APIURL), "/")
+	if apiURL == "" {
+		apiURL = defaultUpdateAPIURL
+	}
+	downloadURL = strings.TrimRight(strings.TrimSpace(options.DownloadURL), "/")
+	if downloadURL == "" {
+		downloadURL = defaultUpdateDownloadURL
+	}
+	if err := validateUpdateURL(apiURL); err != nil {
+		return "", "", false, err
+	}
+	if err := validateUpdateURL(downloadURL); err != nil {
+		return "", "", false, err
+	}
+	return apiURL, downloadURL, strings.HasSuffix(apiURL, "/api/v1"), nil
+}
+
+func validateUpdateURL(address string) error {
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Scheme != "https" && parsed.Scheme != "http" || parsed.Host == "" {
+		return errors.New("hop update: release endpoint must be an absolute HTTP(S) URL")
+	}
+	return nil
+}
+
+func (u *Updater) resolveReleaseTag(ctx context.Context, apiURL, repository, requested string, legacyGitea bool) (string, error) {
 	requested = strings.TrimSpace(requested)
 	if requested != "" && requested != "latest" {
 		tag := requested
@@ -188,24 +223,39 @@ func (u *Updater) resolveReleaseTag(ctx context.Context, baseURL, repository, re
 		}
 		return tag, nil
 	}
-	body, err := u.download(ctx, baseURL+"/api/v1/repos/"+repository+"/releases?draft=false&page=1&limit=20", maxUpdateChecksumBytes)
+	endpoint := apiURL + "/repos/" + repository + "/releases/latest"
+	if legacyGitea {
+		endpoint = apiURL + "/repos/" + repository + "/releases?draft=false&page=1&limit=20"
+	}
+	body, err := u.download(ctx, endpoint, maxUpdateChecksumBytes)
 	if err != nil {
 		return "", fmt.Errorf("hop update: determine latest release: %w", err)
 	}
-	var releases []struct {
+	type releasePayload struct {
 		TagName    string `json:"tag_name"`
 		Draft      bool   `json:"draft"`
 		Prerelease bool   `json:"prerelease"`
 	}
-	if err := json.Unmarshal(body, &releases); err != nil {
+	if legacyGitea {
+		var releases []releasePayload
+		if err := json.Unmarshal(body, &releases); err != nil {
+			return "", fmt.Errorf("hop update: decode latest release: %w", err)
+		}
+		for _, release := range releases {
+			if !release.Draft && !release.Prerelease && safeReleaseTag(release.TagName) {
+				return release.TagName, nil
+			}
+		}
+		return "", errors.New("hop update: no safe stable release was returned")
+	}
+	var release releasePayload
+	if err := json.Unmarshal(body, &release); err != nil {
 		return "", fmt.Errorf("hop update: decode latest release: %w", err)
 	}
-	for _, release := range releases {
-		if !release.Draft && !release.Prerelease && safeReleaseTag(release.TagName) {
-			return release.TagName, nil
-		}
+	if release.Draft || release.Prerelease || !safeReleaseTag(release.TagName) {
+		return "", errors.New("hop update: no safe stable release was returned")
 	}
-	return "", errors.New("hop update: no safe stable release was returned")
+	return release.TagName, nil
 }
 
 func (u *Updater) download(ctx context.Context, address string, limit int64) ([]byte, error) {

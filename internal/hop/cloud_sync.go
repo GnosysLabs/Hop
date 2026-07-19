@@ -73,7 +73,10 @@ func (s *Service) syncPromptHistory(ctx context.Context, auth *AuthClient) (*Pro
 	profile, err := auth.readProfile()
 	if err != nil {
 		if errors.Is(err, ErrNotAuthenticated) {
-			return nil, ErrNotAuthenticated
+			// Prompt history is local-first. Forge sync is an optional legacy
+			// adapter, so normal GitHub, GitLab, and generic remotes must never
+			// produce an authentication warning merely because Hop is not paired.
+			return nil, nil
 		}
 		return nil, err
 	}

@@ -133,6 +133,28 @@ func TestUpdaterLatestSkipsPrerelease(t *testing.T) {
 	}
 }
 
+func TestUpdaterUsesGitHubReleaseEndpoints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/repos/GnosysLabs/Hop/releases/latest" {
+			http.NotFound(response, request)
+			return
+		}
+		fmt.Fprint(response, `{"tag_name":"v1.1.0","draft":false,"prerelease":false}`)
+	}))
+	defer server.Close()
+	updater := NewUpdater()
+	updater.HTTP = server.Client()
+	result, err := updater.Update(context.Background(), "1.0.10", UpdateOptions{
+		APIURL: server.URL, DownloadURL: server.URL, CheckOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AvailableVersion != "1.1.0" {
+		t.Fatalf("available version = %q", result.AvailableVersion)
+	}
+}
+
 func TestUpdateArchiveExtractionRejectsMissingBinary(t *testing.T) {
 	archive := makeUpdateArchiveNamed(t, "hop_darwin_arm64.tar.gz", "README.md", []byte("no binary"))
 	err := extractUpdateBinary("hop_darwin_arm64.tar.gz", archive, filepath.Join(t.TempDir(), "hop"))

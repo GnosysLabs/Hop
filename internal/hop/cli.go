@@ -20,11 +20,12 @@ const usageText = `Hop — prompt-native version control
 
 Usage:
   hop init [path]
-  hop auth login FORGE_URL
+  hop auth login [FORGE_URL]
   hop auth status
   hop auth logout
   hop auth exec [--env NAME] -- COMMAND [ARG...]
-  hop repo create [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME
+  hop repo create [--host PROVIDER] [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME
+  hop host
   hop forge api [--method METHOD] [--data JSON|@-] API_PATH
   hop begin [--agent NAME] [--session ID] [--from STATE] (--stdin | --heredoc | "instruction")
   hop prompt [--from STATE] [--agent NAME] (--stdin | --heredoc | "instruction")
@@ -53,10 +54,12 @@ Usage:
   hop update [--check] [--version VERSION] [--force]
   hop version
 
-OAuth-authenticated Gitea commands:
-  hop clone, whoami, issues, pulls, labels, milestones, releases, times
-  hop organizations, repos, branches, actions, wiki, webhooks, comments
-  hop open, notifications, ssh-keys, admin, api, man
+Host-aware collaboration commands:
+  hop clone, whoami, issues, pulls, labels, releases, repos, actions
+  hop open, notifications, ssh-keys, api
+
+Core Hop commands work with every Git remote. Collaboration commands use the
+detected GitHub, GitLab, or Gitea adapter when that capability is available.
 
 Add --json anywhere for machine-readable output.
 `
@@ -104,7 +107,9 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		checkOnly := fs.Bool("check", false, "check for an update without installing it")
 		version := fs.String("version", "latest", "release version or latest")
 		force := fs.Bool("force", false, "reinstall or explicitly downgrade to the requested version")
-		baseURL := fs.String("base-url", updateEnvironmentDefault("HOP_GITEA_URL", defaultUpdateBaseURL), "release forge base URL")
+		apiURL := fs.String("api-url", updateEnvironmentDefault("HOP_RELEASE_API_URL", defaultUpdateAPIURL), "release API base URL")
+		downloadURL := fs.String("download-url", updateEnvironmentDefault("HOP_RELEASE_URL", defaultUpdateDownloadURL), "release download base URL")
+		baseURL := fs.String("base-url", updateEnvironmentDefault("HOP_GITEA_URL", ""), "deprecated Gitea-compatible release base URL")
 		repository := fs.String("repository", updateEnvironmentDefault("HOP_REPOSITORY", defaultUpdateRepository), "release repository as OWNER/NAME")
 		if err := fs.Parse(commandArgs); err != nil {
 			return 2
@@ -113,10 +118,14 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			fmt.Fprintln(stderr, "usage: hop update [--check] [--version VERSION] [--force]")
 			return 2
 		}
-		result, err := NewUpdater().Update(ctx, effectiveVersion(), UpdateOptions{
+		options := UpdateOptions{
 			Version: *version, CheckOnly: *checkOnly, Force: *force,
-			BaseURL: *baseURL, Repository: *repository,
-		})
+			APIURL: *apiURL, DownloadURL: *downloadURL, BaseURL: *baseURL, Repository: *repository,
+		}
+		if strings.TrimSpace(*baseURL) != "" {
+			options.APIURL, options.DownloadURL = "", ""
+		}
+		result, err := NewUpdater().Update(ctx, effectiveVersion(), options)
 		if err != nil {
 			return printCLIError(err, jsonOutput, stdout, stderr)
 		}
@@ -157,6 +166,9 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 	if command == "skill" {
 		return runSkillCLI(commandArgs, jsonOutput, stdout, stderr)
 	}
+	if command == "host" {
+		return runHostCLI(ctx, jsonOutput, stdout, stderr)
+	}
 	if command == "auth" {
 		return runAuthCLI(ctx, commandArgs, stdin, jsonOutput, stdout, stderr)
 	}
@@ -167,16 +179,13 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		return runForgeCLI(ctx, commandArgs, stdin, jsonOutput, stdout, stderr)
 	}
 	if command == "login" {
-		if len(commandArgs) == 0 {
-			commandArgs = []string{"https://githop.xyz"}
-		}
 		return runAuthCLI(ctx, append([]string{"login"}, commandArgs...), stdin, jsonOutput, stdout, stderr)
 	}
 	if command == "logout" {
 		return runAuthCLI(ctx, []string{"logout"}, stdin, jsonOutput, stdout, stderr)
 	}
-	if isTeaCompatibleCommand(command) {
-		return runTeaCompatibleCLI(ctx, append([]string{command}, commandArgs...), stdin, stdout, stderr, NewAuthClient())
+	if isForgeCommand(command) {
+		return runForgeCommand(ctx, append([]string{command}, commandArgs...), stdin, stdout, stderr)
 	}
 	if command == "sync-prompts-worker" {
 		service, err := OpenProject(".")
@@ -860,13 +869,14 @@ func printWorkspaceCleanupIssues(w io.Writer, issues []WorkspaceCleanupIssue) {
 
 func runRepoCLI(ctx context.Context, args []string, jsonOutput bool, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "create" {
-		fmt.Fprintln(stderr, "usage: hop repo create [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME")
+		fmt.Fprintln(stderr, "usage: hop repo create [--host PROVIDER] [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME")
 		return 2
 	}
 	fs := flag.NewFlagSet("repo create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	private := fs.Bool("private", false, "create a private repository")
 	public := fs.Bool("public", false, "create a public repository")
+	host := fs.String("host", updateEnvironmentDefault("HOP_FORGE", "github"), "forge provider: github, gitlab, or gitea")
 	remoteName := fs.String("remote", "origin", "Git remote to add")
 	replaceRemote := fs.Bool("replace-remote", false, "replace an existing remote URL")
 	if err := fs.Parse(args[1:]); err != nil || len(fs.Args()) != 1 || (*private && *public) {
@@ -885,23 +895,51 @@ func runRepoCLI(ctx context.Context, args []string, jsonOutput bool, stdout, std
 	if err := repository.PreflightRemote(ctx, *remoteName, *replaceRemote); err != nil {
 		return printCLIError(err, jsonOutput, stdout, stderr)
 	}
-	auth := NewAuthClient()
-	created, err := auth.CreateRepository(ctx, parts[0], parts[1], *private)
-	if err != nil {
-		return printCLIError(err, jsonOutput, stdout, stderr)
+	provider := forgeKindForHost("", *host)
+	if provider == ForgeGeneric {
+		fmt.Fprintln(stderr, "hop repo create: --host must be github, gitlab, or gitea")
+		return 2
 	}
-	if err := repository.ConfigureRemote(ctx, *remoteName, created.CloneURL, *replaceRemote); err != nil {
+	cloneURL := ""
+	visibility := "public"
+	if *private {
+		visibility = "private"
+	}
+	var created any
+	providerOutput := stdout
+	if jsonOutput {
+		providerOutput = io.Discard
+	}
+	switch provider {
+	case ForgeGitHub:
+		arguments := []string{"repo", "create", fullName, "--" + visibility}
+		if code := runProviderCLI(ctx, "gh", arguments, strings.NewReader(""), providerOutput, stderr); code != 0 {
+			return code
+		}
+		cloneURL = "https://github.com/" + fullName + ".git"
+		created = map[string]any{"full_name": fullName, "private": *private, "clone_url": cloneURL, "provider": provider}
+	case ForgeGitLab:
+		arguments := []string{"repo", "create", fullName, "--" + visibility}
+		if code := runProviderCLI(ctx, "glab", arguments, strings.NewReader(""), providerOutput, stderr); code != 0 {
+			return code
+		}
+		cloneURL = "https://gitlab.com/" + fullName + ".git"
+		created = map[string]any{"full_name": fullName, "private": *private, "clone_url": cloneURL, "provider": provider}
+	case ForgeGitea:
+		giteaRepository, createErr := NewAuthClient().CreateRepository(ctx, parts[0], parts[1], *private)
+		if createErr != nil {
+			return printCLIError(createErr, jsonOutput, stdout, stderr)
+		}
+		cloneURL, created = giteaRepository.CloneURL, giteaRepository
+	}
+	if err := repository.ConfigureRemote(ctx, *remoteName, cloneURL, *replaceRemote); err != nil {
 		return printCLIError(err, jsonOutput, stdout, stderr)
 	}
 	result := map[string]any{"repository": created, "remote": *remoteName}
 	if jsonOutput {
 		writeJSON(stdout, map[string]any{"ok": true, "data": result})
 	} else {
-		visibility := "public"
-		if created.Private {
-			visibility = "private"
-		}
-		fmt.Fprintf(stdout, "Created %s repository %s\nConfigured Git remote %s: %s\n", visibility, created.FullName, *remoteName, created.CloneURL)
+		fmt.Fprintf(stdout, "Created %s repository %s on %s\nConfigured Git remote %s: %s\n", visibility, fullName, provider, *remoteName, cloneURL)
 	}
 	return 0
 }
@@ -1006,14 +1044,26 @@ func runSkillCLI(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
 
 func runAuthCLI(ctx context.Context, args []string, stdin io.Reader, jsonOutput bool, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: hop auth login FORGE_URL | hop auth status | hop auth logout | hop auth exec [--env NAME] -- COMMAND [ARG...]")
+		fmt.Fprintln(stderr, "usage: hop auth login [FORGE_URL] | hop auth status | hop auth logout | hop auth exec [--env NAME] -- COMMAND [ARG...]")
 		return 2
+	}
+	if args[0] != "exec" {
+		info, _ := detectForge(ctx, ".")
+		provider, host := info.Provider, info.Host
+		if args[0] == "login" && len(args) == 2 {
+			if parsed, parseErr := parseForgeLoginTarget(args[1]); parseErr == nil {
+				provider, host = parsed.Provider, parsed.Host
+			}
+		}
+		if provider == ForgeGitHub || provider == ForgeGitLab {
+			return runProviderAuthCLI(ctx, provider, host, args, stdin, stdout, stderr)
+		}
 	}
 	auth := NewAuthClient()
 	switch args[0] {
 	case "login":
 		if len(args) != 2 {
-			fmt.Fprintln(stderr, "usage: hop auth login FORGE_URL")
+			fmt.Fprintln(stderr, "usage: hop auth login [FORGE_URL]")
 			return 2
 		}
 		result, err := auth.Login(ctx, args[1], func(target string) {

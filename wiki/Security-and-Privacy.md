@@ -11,9 +11,10 @@ SQLite data is not encrypted at rest.
 not publish it. Initialization refuses to hide a `.hop` directory that the
 project already tracks.
 
-## Private prompt sync
+## Optional legacy prompt sync
 
-Prompt history remains local by default. `hop auth login FORGE_URL` starts a
+Prompt history remains local by default. The existing Gitea compatibility
+adapter can pair with a Hop-enabled server. `hop auth login FORGE_URL` starts a
 browser-based OAuth Authorization Code flow with PKCE and a temporary
 `127.0.0.1` callback. Hop requests Gitea's `all` scope and stores the access and
 rotating refresh credentials in the operating-system keychain. The
@@ -46,8 +47,8 @@ when Hop reports a redaction.
 
 ## Installer and release integrity
 
-Packaged installers download `checksums.txt` from the same published Gitea
-Release and verify the selected archive before extraction. Gitea Releases are
+Packaged installers download `checksums.txt` from the same published GitHub
+Release and verify the selected archive before extraction. Releases are
 created as drafts, after race tests, vetting, and cross-platform builds, then
 must be reviewed before publication.
 
@@ -58,11 +59,9 @@ public key independently. Checksum signing is listed as a launch gate in the
 
 ## Release-machine trust
 
-Release builds execute on a maintainer machine, not on the Gitea server. Use a
-trusted, patched machine. On the forge selected by `hop auth login`, the release
-workflow uses that existing OAuth grant through `hop auth exec`; the token stays
-out of argv and is redacted from the child process's captured output. Releases
-upload as drafts for review. Hop and its agents never create, rotate, list, or
+Release builds execute on a trusted maintainer machine, not GitHub Actions.
+Publication uses the maintainer's existing authenticated `gh` session and
+uploads a draft for review. Hop and its agents never create, rotate, list, or
 revoke provider account tokens.
 
 ## Filesystem safety
@@ -72,8 +71,8 @@ real Git index. Ordinary nonignored visible-root edits are captured into Hop's
 accepted lineage before merging. Synchronization remains fail-closed for
 ignored destinations, staged/index state, and filesystem races.
 
-Automatic push uses the existing Git transport for other forges. For the forge
-selected by `hop auth login`, Hop stores the OAuth grant only in the OS keychain
+Automatic push uses the existing Git transport for every host. For a legacy
+Gitea forge selected by `hop auth login`, Hop stores the OAuth grant only in the OS keychain
 and passes a repository-scoped authorization header to its Git subprocess via
 the environment. It never embeds the token in a remote URL or command argument,
 never persists it in Git configuration, disables terminal prompting, and leaves

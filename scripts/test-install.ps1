@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Path $fixtures, $payload, $testHome | Out-Null
 try {
     $binary = Join-Path $payload "hop.exe"
     & go build -trimpath `
-        -ldflags "-X githop.xyz/GnosysLabs/Hop/internal/hop.Version=9.9.9-installer-test" `
+        -ldflags "-X github.com/GnosysLabs/Hop/internal/hop.Version=9.9.9-installer-test" `
         -o $binary (Join-Path $root "cmd/hop")
     if ($LASTEXITCODE -ne 0) { throw "Could not build installer test binary" }
 
@@ -29,27 +29,16 @@ try {
     $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
     "$hash  $asset" | Set-Content -Encoding ascii (Join-Path $fixtures "checksums.txt")
 
-    function Invoke-RestMethod {
-        [CmdletBinding()]
-        param([Parameter(Mandatory)][string]$Uri)
-        if (-not $Uri.EndsWith("/releases?draft=false&page=1&limit=1")) {
-            throw "Unexpected installer API URL: $Uri"
-        }
-        return ,([pscustomobject]@{
-            tag_name = "v9.9.9-installer-test"
-            prerelease = $true
-            draft = $false
-        })
-    }
-
     function Invoke-WebRequest {
         [CmdletBinding()]
         param(
             [switch]$UseBasicParsing,
             [Parameter(Mandatory)][string]$Uri,
-            [Parameter(Mandatory)][string]$OutFile
+            [string]$OutFile
         )
-        if ($Uri.EndsWith("/checksums.txt")) {
+        if ($Uri.EndsWith("/releases/latest")) {
+            return [pscustomobject]@{ Content = '{"tag_name":"v9.9.9-installer-test","prerelease":false,"draft":false}' }
+        } elseif ($Uri.EndsWith("/checksums.txt")) {
             Copy-Item (Join-Path $fixtures "checksums.txt") $OutFile
         } elseif ($Uri.EndsWith("/$asset")) {
             Copy-Item (Join-Path $fixtures $asset) $OutFile
@@ -63,7 +52,8 @@ try {
     $env:CODEX_HOME = $testCodexHome
 
     & (Join-Path $root "scripts/install.ps1") `
-        -GiteaUrl "https://gitea.test" `
+        -ApiUrl "https://api.test" `
+        -ReleaseUrl "https://releases.test" `
         -Repository "GnosysLabs/Hop" `
         -InstallDir $installDir `
         -SkipPath
@@ -130,7 +120,8 @@ try {
     $installFailed = $false
     try {
         & (Join-Path $root "scripts/install.ps1") `
-            -GiteaUrl "https://gitea.test" `
+            -ApiUrl "https://api.test" `
+            -ReleaseUrl "https://releases.test" `
             -Repository "GnosysLabs/Hop" `
             -InstallDir $installDir `
             -SkipPath

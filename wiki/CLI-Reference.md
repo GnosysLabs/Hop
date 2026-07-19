@@ -93,9 +93,10 @@ Hop downloads the matching release archive and `checksums.txt`, verifies its
 SHA-256 checksum and embedded version, atomically replaces a standalone install,
 and refreshes all default skill bundles. A downgrade or same-version reinstall
 requires `--force`. On Windows, a verified helper finishes replacement after the
-running process exits. `HOP_GITEA_URL` and `HOP_REPOSITORY` select another
-release forge and repository; the equivalent CLI flags are `--base-url` and
-`--repository`.
+running process exits. `HOP_RELEASE_API_URL`, `HOP_RELEASE_URL`, and
+`HOP_REPOSITORY` select another release source; the equivalent CLI flags are
+`--api-url`, `--download-url`, and `--repository`. `--base-url` remains a
+deprecated Gitea bridge for older private distributions.
 
 Package-manager installations remain owned by that package manager and should
 use its update command instead of replacing files inside its package directory.
@@ -112,47 +113,36 @@ Without `--path`, Hop installs the same Hop-managed skill files at
 `~/.claude/skills/hop`. With `--path`, it installs only to
 `SKILLS_DIR/hop`.
 
-## Authenticated forge operations
+## Git host and collaboration operations
 
 ```bash
-hop repo create [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME
-hop forge api [--method METHOD] [--data JSON|@-] API_PATH
-hop auth exec [--env NAME] -- COMMAND [ARG...]
+hop host
+hop repo create [--host PROVIDER] [--private | --public] [--remote NAME] [--replace-remote] OWNER/NAME
+hop issues
+hop pulls
+hop releases
 ```
 
-All three commands use the current `hop auth login` OAuth grant. `repo create`
-creates a user or organization repository and configures the selected Git
-remote. Existing remotes require `--replace-remote`, which should be used only
-when the user requested a publishing-destination change. `forge api` accepts
-only relative `/api/v1/` paths on the authenticated forge. `auth exec` provides
-the current token to one child process through `GITEA_TOKEN` by default and
-redacts it from captured stdout and stderr.
-
-## Native Gitea command families
-
-The same Hop binary embeds the established Gitea collaboration command engine
-behind Hop-native command names:
+`hop host` detects the provider from the push remote. Core Hop commands use Git
+directly and work without a provider API. Collaboration commands use `gh` for
+GitHub, `glab` for GitLab, and the embedded adapter for Gitea:
 
 ```text
-clone       whoami       issues       pulls         labels
-milestones  releases     times        organizations repos
-branches    actions      wiki         webhooks      comments
-open        notifications ssh-keys    admin         api       man
+clone  whoami  issues  pulls  labels  releases  repos  actions
+open   notifications  ssh-keys  api
 ```
 
 Examples:
 
 ```bash
-hop clone OWNER/REPOSITORY
-hop issues list --repo OWNER/REPOSITORY --output json
-hop pulls checkout NUMBER
-hop releases create TAG --asset ./dist/archive.tar.gz
+hop issues list
+hop pulls create --fill
+hop releases view v1.1.0
 ```
 
-These commands automatically receive the current refreshed Hop OAuth session.
-They do not read or create a Tea login. `hop login` and `hop logout` are aliases
-for Hop OAuth authentication, while `hop auth login` and `hop auth logout`
-remain the explicit canonical forms.
+Unsupported provider capabilities fail clearly without affecting core Hop or
+Git workflows. The legacy Gitea OAuth/API commands remain available for
+existing installations.
 
 ## Exit codes
 

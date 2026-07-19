@@ -23,7 +23,7 @@ esac
 asset="hop_${os}_${arch}.tar.gz"
 mkdir -p "$tmp_dir/payload" "$tmp_dir/fixtures" "$tmp_dir/mock-bin" "$tmp_dir/home"
 go build -trimpath \
-  -ldflags '-X githop.xyz/GnosysLabs/Hop/internal/hop.Version=9.9.9-installer-test' \
+  -ldflags '-X github.com/GnosysLabs/Hop/internal/hop.Version=9.9.9-installer-test' \
   -o "$tmp_dir/payload/hop" "$root/cmd/hop"
 tar -czf "$tmp_dir/fixtures/$asset" -C "$tmp_dir/payload" hop
 if command -v sha256sum >/dev/null 2>&1; then
@@ -46,8 +46,8 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 case "$url" in
-  */api/v1/repos/*/releases\?draft=false\&page=1\&limit=1)
-    printf '[{"tag_name":"v9.9.9-installer-test","prerelease":true,"draft":false}]'
+  */repos/*/releases/latest)
+	printf '{"tag_name":"v9.9.9-installer-test","prerelease":false,"draft":false}'
     ;;
   */checksums.txt)
     cp "$HOP_TEST_FIXTURES/checksums.txt" "$output"
@@ -67,7 +67,8 @@ HOME="$tmp_dir/home" \
 CODEX_HOME="$tmp_dir/home/.codex" \
 PATH="$tmp_dir/mock-bin:$PATH" \
 HOP_TEST_FIXTURES="$tmp_dir/fixtures" \
-HOP_GITEA_URL="https://gitea.test" \
+HOP_RELEASE_API_URL="https://api.test" \
+HOP_RELEASE_URL="https://releases.test" \
 HOP_REPOSITORY="GnosysLabs/Hop" \
 HOP_INSTALL_DIR="$tmp_dir/home/bin" \
 HOP_MODIFY_PATH=0 \

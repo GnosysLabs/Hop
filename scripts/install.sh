@@ -1,8 +1,10 @@
 #!/bin/sh
 set -eu
 
-gitea_url=${HOP_GITEA_URL:-https://githop.xyz}
-gitea_url=${gitea_url%/}
+api_url=${HOP_RELEASE_API_URL:-https://api.github.com}
+api_url=${api_url%/}
+release_base=${HOP_RELEASE_URL:-https://github.com}
+release_base=${release_base%/}
 repository=${HOP_REPOSITORY:-GnosysLabs/Hop}
 requested_version=${HOP_VERSION:-latest}
 install_dir=${HOP_INSTALL_DIR:-"$HOME/.local/bin"}
@@ -31,10 +33,8 @@ esac
 
 asset="hop_${os}_${arch}.tar.gz"
 if [ "$requested_version" = latest ]; then
-  # Gitea's /releases/latest endpoint omits prereleases. Hop is distributed as
-  # an alpha today, so select the newest published release from the list API.
   latest_json=$(curl -fL --retry 3 --proto '=https' --tlsv1.2 \
-    "$gitea_url/api/v1/repos/$repository/releases?draft=false&page=1&limit=1")
+    "$api_url/repos/$repository/releases/latest")
   tag=$(printf '%s' "$latest_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   [ -n "$tag" ] || fail "could not determine the latest published release"
 else
@@ -46,7 +46,7 @@ fi
 case "$tag" in
   *[!A-Za-z0-9._-]*) fail "release API returned an unsafe tag: $tag" ;;
 esac
-release_url="$gitea_url/$repository/releases/download/${tag}"
+release_url="$release_base/$repository/releases/download/${tag}"
 
 tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t hop-install)
 cleanup() {

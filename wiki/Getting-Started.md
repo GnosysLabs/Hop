@@ -60,54 +60,31 @@ If the active Git branch has an upstream—or the repository has one unambiguous
 commit automatically. Hop never force-pushes. Repositories without a remote
 remain local without treating that as an error.
 
-## Sync private prompt history
+## Use any Git host
 
-Prompt history is local by default. Pair Hop with a Hop-enabled Gitea forge if
-you want the private web history view:
-
-```bash
-hop auth login https://githop.xyz
-```
-
-Your browser asks Gitea to authorize this device. After approval, verify the
-connection or remove it with:
+Prompt history stays local in `.hop/`; no forge account is required. Hop uses
+the repository's existing Git remote for fetch and automatic push. Inspect what
+it detected with:
 
 ```bash
-hop auth status
-hop auth logout
+hop host
 ```
 
-The repository's Git remote determines where its prompt records belong. After
-pairing, Hop syncs its records after `propose`, `accept`, and `land` and as part
-of `hop sync`. The same login authenticates Hop's private repository fetch and
-push operations on that forge. Network failures only produce a warning; the local
-database remains the retry source.
+GitHub, GitLab, Gitea, generic SSH/HTTPS Git servers, and local bare remotes all
+work for core version control. Issues, pull requests, and releases use an
+optional host adapter. On GitHub, authenticate the standard `gh` CLI once; on
+GitLab use `glab`; Gitea keeps an embedded compatibility adapter.
 
-That OAuth login is also the default credential for repository, issue, pull
-request, release, and other Gitea API work. For example:
+Common host-aware commands are:
 
 ```bash
-hop repo create --private OWNER/REPOSITORY
-hop forge api --method PATCH --data '{"state":"closed"}' \
-  /api/v1/repos/OWNER/REPOSITORY/issues/NUMBER
+hop issues list
+hop pulls list
+hop releases list
 ```
 
-Agents should not open another Gitea sign-in page when `hop auth status`
-succeeds.
-
-Hop includes native Gitea collaboration commands backed by that same OAuth
-session. Common examples are:
-
-```bash
-hop clone OWNER/REPOSITORY
-hop issues list --repo OWNER/REPOSITORY
-hop comments add --repo OWNER/REPOSITORY ISSUE_NUMBER "Comment text"
-hop pulls list --repo OWNER/REPOSITORY
-hop releases list --repo OWNER/REPOSITORY
-```
-
-The complete families are listed by `hop help`; each supports
-`hop COMMAND --help`. No Tea binary, Tea configuration, or Tea login is needed.
+Hop never creates access tokens. It uses the user's existing provider CLI, OS
+keychain, or Git credential helper.
 
 ## Ask for review before landing
 

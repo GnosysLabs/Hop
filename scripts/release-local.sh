@@ -12,8 +12,8 @@ Usage: scripts/release-local.sh --snapshot
        scripts/release-local.sh --publish
 
 --snapshot  Test and build all release archives locally without uploading.
---publish   Test, build, and upload a draft release to githop.xyz.
-            Requires a clean signed tag, LICENSE, and Hop OAuth login.
+--publish   Test, build, and upload a draft release to GitHub.
+            Requires a clean signed tag, LICENSE, and `gh auth login`.
 EOF
 }
 
@@ -33,11 +33,8 @@ done
 
 if [ "$mode" = --publish ]; then
   [ -f LICENSE ] || fail "LICENSE is required before publishing"
-  if [ -z "${GITEA_TOKEN:-}" ]; then
-    [ "${HOP_OAUTH_EXEC:-0}" != 1 ] || fail "Hop OAuth did not provide GITEA_TOKEN"
-    printf 'Using the existing Hop OAuth grant for release publication...\n'
-    HOP_OAUTH_EXEC=1 exec go run ./cmd/hop auth exec --env GITEA_TOKEN -- sh "$0" --publish
-  fi
+  command -v gh >/dev/null 2>&1 || fail "gh is required for GitHub release publication"
+  gh auth status --hostname github.com >/dev/null 2>&1 || fail "authenticate with gh auth login"
   [ -z "$(git status --porcelain)" ] || fail "the Git worktree must be clean"
   tag=$(git describe --tags --exact-match HEAD 2>/dev/null) ||
     fail "HEAD must have an exact release tag"
@@ -104,6 +101,8 @@ if [ "$mode" = --snapshot ]; then
   "$tmp_dir/goreleaser" release --snapshot --clean
   printf 'Local snapshot complete: %s/dist\n' "$root"
 else
-  "$tmp_dir/goreleaser" release --clean
-  printf 'Draft release uploaded to https://githop.xyz/GnosysLabs/Hop/releases\n'
+  "$tmp_dir/goreleaser" release --clean --skip=publish
+  gh release create "$tag" dist/*.tar.gz dist/*.zip dist/checksums.txt \
+    --repo GnosysLabs/Hop --draft --verify-tag --generate-notes --title "$tag"
+  printf 'Draft release uploaded to https://github.com/GnosysLabs/Hop/releases\n'
 fi

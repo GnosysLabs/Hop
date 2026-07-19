@@ -25,7 +25,7 @@ and safe multi-agent integration.
   transition is pushed without moving the local branch or force-pushing.
 - **History stays local by default.** Detected credentials are redacted before
   prompts and evidence are persisted. Optional authenticated sync keeps prompt
-  history private to the signed-in forge account and never puts it in Git.
+  history private and never puts it in Git.
 
 ## How it works
 
@@ -46,20 +46,20 @@ Hop requires Git 2.40 or newer.
 ### macOS and Linux
 
 ```bash
-curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/GnosysLabs/Hop/main/scripts/install.sh | sh
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/GnosysLabs/Hop/main/scripts/install.ps1 | iex
 ```
 
 The installer adds the Hop CLI and writes the same embedded skill version to
 `~/.agents/skills/hop`, `${CODEX_HOME:-~/.codex}/skills/hop`, and
 `~/.claude/skills/hop`. For CLI-only installation, source builds, version
 pinning, custom locations, and verification, see the
-[installation guide](https://githop.xyz/GnosysLabs/Hop/wiki/Installation).
+[installation guide](wiki/Installation.md).
 
 After the first installation, Hop upgrades itself and refreshes its agent skill:
 
@@ -91,31 +91,15 @@ both fields available to private prompt-history sync.
 When the repository has an unambiguous Git upstream, Hop also pushes the
 accepted commit automatically; users do not run `git push` after each task.
 
-To see private prompt history on a Hop-enabled Gitea forge, pair the CLI once:
+Hop works with any normal Git remote: GitHub, GitLab, Gitea, SSH servers, and
+local bare repositories. `hop host` reports the detected provider. Core
+commands such as `hop land`, `hop push`, and `hop push-tag` use Git itself and
+do not require a forge API or hosted CI.
 
-```bash
-hop auth login https://githop.xyz
-```
-
-Hop opens Gitea in the browser, uses OAuth Authorization Code + PKCE, and keeps
-the resulting full-account OAuth access and refresh grant in the operating-system
-keychain. That one login powers private prompt sync and Hop's authenticated
-fetch/push operations for same-forge repositories, including repositories whose
-configured remote uses SSH syntax. Prompt records then sync after proposal,
-acceptance, and landing, and whenever `hop sync` runs. Sync is idempotent and
-best-effort: offline failures never block local work, and a later run resends
-from the private local database.
-
-The same grant is also the default for repository creation, issue and pull
-request work, releases, and other same-forge API operations. `hop repo create`,
-`hop forge api`, and `hop auth exec` let agents perform that work without asking
-for a personal access token or opening a second Gitea login session.
-
-Hop also exposes the full Gitea collaboration command surface directly from the
-same binary and OAuth session. Commands such as `hop clone OWNER/REPO`,
-`hop issues`, `hop pulls`, `hop repos`, `hop releases`, `hop actions`, and
-`hop wiki` require neither Tea nor a separate Tea login. Run
-`hop COMMAND --help` for each command family's subcommands and flags.
+Optional collaboration commands adapt to the host. On GitHub they use the
+existing authenticated `gh` CLI; on GitLab they use `glab`; Gitea retains its
+embedded adapter. Hop never creates access tokens. Use the provider's normal
+credential setup, such as `gh auth login`, and keep secrets in the OS keychain.
 
 For example, Codex Desktop users restart Codex after installation, select a Git
 project, and prompt normally. Other compatible runtimes can read the shared
@@ -127,13 +111,13 @@ changes require a new major release.
 
 ## Documentation
 
-- [Getting started](https://githop.xyz/GnosysLabs/Hop/wiki/Getting-Started)
-- [Agent workflow](https://githop.xyz/GnosysLabs/Hop/wiki/Agent-Workflow)
-- [Parallel agents and conflicts](https://githop.xyz/GnosysLabs/Hop/wiki/Parallel-Agents-and-Conflicts)
-- [Core concepts](https://githop.xyz/GnosysLabs/Hop/wiki/Core-Concepts)
-- [CLI reference](https://githop.xyz/GnosysLabs/Hop/wiki/CLI-Reference)
-- [Security and privacy](https://githop.xyz/GnosysLabs/Hop/wiki/Security-and-Privacy)
-- [Architecture](https://githop.xyz/GnosysLabs/Hop/wiki/Architecture)
+- [Getting started](wiki/Getting-Started.md)
+- [Agent workflow](wiki/Agent-Workflow.md)
+- [Parallel agents and conflicts](wiki/Parallel-Agents-and-Conflicts.md)
+- [Core concepts](wiki/Core-Concepts.md)
+- [CLI reference](wiki/CLI-Reference.md)
+- [Security and privacy](wiki/Security-and-Privacy.md)
+- [Architecture](wiki/Architecture.md)
 - [Product blueprint](docs/product-blueprint.md)
 
 ## License

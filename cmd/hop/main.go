@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"githop.xyz/GnosysLabs/Hop/internal/hop"
+	"github.com/GnosysLabs/Hop/internal/hop"
 )
 
 func main() {

@@ -23,20 +23,20 @@ is intentional.
 Rerunning the installer remains the no-Node bootstrap and recovery path:
 
 ```bash
-curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/GnosysLabs/Hop/main/scripts/install.sh | sh
 ```
 
 Pin a release when required:
 
 ```bash
-curl -fsSL https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/GnosysLabs/Hop/main/scripts/install.sh | \
   HOP_VERSION=v0.1.0 sh
 ```
 
 Windows:
 
 ```powershell
-irm https://githop.xyz/GnosysLabs/Hop/raw/branch/main/scripts/install.ps1 -OutFile install.ps1
+irm https://raw.githubusercontent.com/GnosysLabs/Hop/main/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1 -Version v0.1.0
 Remove-Item install.ps1
 ```
@@ -53,7 +53,7 @@ Restart any agent client whose installed skill changed.
 ## Upgrade Go installations
 
 ```bash
-go install githop.xyz/GnosysLabs/Hop/cmd/hop@latest
+go install github.com/GnosysLabs/Hop/cmd/hop@latest
 hop skill install --force
 ```
 

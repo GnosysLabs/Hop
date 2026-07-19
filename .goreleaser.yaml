@@ -22,7 +22,7 @@ builds:
     ldflags:
       - >-
         -s -w
-        -X githop.xyz/GnosysLabs/Hop/internal/hop.Version={{ .Version }}
+        -X github.com/GnosysLabs/Hop/internal/hop.Version={{ .Version }}
 
 archives:
   - id: release
@@ -45,11 +45,6 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
-gitea_urls:
-  api: https://githop.xyz/api/v1
-  download: https://githop.xyz
-  skip_tls_verify: false
-
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
@@ -65,7 +60,7 @@ changelog:
       - "Merge branch"
 
 release:
-  gitea:
+  github:
     owner: GnosysLabs
     name: Hop
   draft: true

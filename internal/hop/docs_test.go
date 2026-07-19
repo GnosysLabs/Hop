@@ -49,24 +49,23 @@ func TestDocumentationLinksResolve(t *testing.T) {
 	}
 }
 
-func TestProductDocumentationUsesCanonicalGiteaHost(t *testing.T) {
+func TestProductDocumentationUsesCanonicalGitHubHost(t *testing.T) {
 	for _, relative := range []string{"README.md", "wiki/Home.md", "wiki/Installation.md"} {
 		contents, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(relative)))
 		if err != nil {
 			t.Fatal(err)
 		}
 		text := string(contents)
-		if !strings.Contains(text, "githop.xyz/GnosysLabs/Hop") {
+		if !strings.Contains(text, "github.com/GnosysLabs/Hop") && !strings.Contains(text, "raw.githubusercontent.com/GnosysLabs/Hop") {
 			t.Errorf("%s does not name the canonical distribution host", relative)
 		}
-		if strings.Contains(text, "raw.githubusercontent.com/hop-vcs/hop") ||
-			strings.Contains(text, "github.com/hop-vcs/hop") {
-			t.Errorf("%s still points installation at GitHub", relative)
+		if strings.Contains(text, "githop.xyz/GnosysLabs/Hop/raw") {
+			t.Errorf("%s still points installation at the retired forge", relative)
 		}
 	}
 }
 
-func TestDistributionDoesNotRequireGiteaActions(t *testing.T) {
+func TestDistributionDoesNotRequireHostedActions(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	workflows, err := filepath.Glob(filepath.Join(root, ".gitea", "workflows", "*"))
 	if err != nil {
@@ -84,14 +83,14 @@ func TestDistributionDoesNotRequireGiteaActions(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowUsesExistingHopOAuthCredential(t *testing.T) {
+func TestReleaseWorkflowUsesExistingGitHubCredential(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	script, err := os.ReadFile(filepath.Join(root, "scripts", "release-local.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(script), "hop auth exec --env GITEA_TOKEN") {
-		t.Fatal("release script does not use the existing Hop OAuth grant")
+	if !strings.Contains(string(script), "gh auth status") || !strings.Contains(string(script), "gh release create") {
+		t.Fatal("release script does not use the existing GitHub CLI credential")
 	}
 	if strings.Contains(string(script), "/tokens") {
 		t.Fatal("release script must not manage provider tokens")
@@ -106,7 +105,7 @@ func TestReleaseWorkflowUsesExistingHopOAuthCredential(t *testing.T) {
 	}
 }
 
-func TestAgentSkillUsesHopOAuthForGithop(t *testing.T) {
+func TestAgentSkillIsForgeNeutral(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	for _, relative := range []string{
 		"skills/hop/SKILL.md",
@@ -117,17 +116,16 @@ func TestAgentSkillUsesHopOAuthForGithop(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(contents)
-		normalized := strings.Join(strings.Fields(text), " ")
-		if !strings.Contains(text, "hop auth login https://githop.xyz") {
-			t.Errorf("%s does not direct agents to the intended githop.xyz OAuth login", relative)
+		if !strings.Contains(text, "hop host") {
+			t.Errorf("%s does not direct agents to detect the Git host", relative)
 		}
-		if !strings.Contains(normalized, "private repositories") {
-			t.Errorf("%s does not explain that OAuth covers public and private repositories", relative)
+		if !strings.Contains(text, "never create") && !strings.Contains(text, "Do not request, create") {
+			t.Errorf("%s does not preserve the token-management boundary", relative)
 		}
 	}
 }
 
-func TestAgentSkillDocumentsNativeGiteaCommands(t *testing.T) {
+func TestAgentSkillDocumentsHostAwareCommands(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "..", "skills", "hop", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -138,8 +136,10 @@ func TestAgentSkillDocumentsNativeGiteaCommands(t *testing.T) {
 			t.Errorf("agent skill omits native command %q", command)
 		}
 	}
-	if !strings.Contains(text, "do not invoke or install Tea") {
-		t.Fatal("agent skill does not forbid a redundant Tea installation/login path")
+	for _, provider := range []string{"GitHub", "GitLab", "Gitea"} {
+		if !strings.Contains(text, provider) {
+			t.Errorf("agent skill omits %s adapter", provider)
+		}
 	}
 }
 

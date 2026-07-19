@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	hopskill "githop.xyz/GnosysLabs/Hop/skills/hop"
+	hopskill "github.com/GnosysLabs/Hop/skills/hop"
 )
 
 type SkillInstallResult struct {
