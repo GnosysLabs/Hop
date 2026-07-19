@@ -442,6 +442,7 @@ func TestAuthResponseErrorsRedactAuthorizationHeaders(t *testing.T) {
 }
 
 func TestAuthCLIWorksOutsideAHopProject(t *testing.T) {
+	t.Chdir(t.TempDir())
 	t.Setenv("HOP_AUTH_PROFILE", filepath.Join(t.TempDir(), "missing-auth.json"))
 	var stdout, stderr bytes.Buffer
 	if code := RunCLI([]string{"auth", "status", "--json"}, &stdout, &stderr); code != 1 {
