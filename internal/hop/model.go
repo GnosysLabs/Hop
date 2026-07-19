@@ -23,19 +23,52 @@ type Parent struct {
 }
 
 type State struct {
-	ID                string    `json:"id"`
-	Kind              StateKind `json:"kind"`
-	TaskID            string    `json:"task_id,omitempty"`
-	AttemptID         string    `json:"attempt_id,omitempty"`
-	CanonicalAnchorID string    `json:"canonical_anchor_id,omitempty"`
-	SourceTree        string    `json:"source_tree"`
-	GitCommit         string    `json:"git_commit"`
-	Prompt            string    `json:"prompt,omitempty"`
-	Summary           string    `json:"summary,omitempty"`
-	Agent             string    `json:"agent,omitempty"`
-	Digest            string    `json:"digest"`
-	CreatedAt         time.Time `json:"created_at"`
-	Parents           []Parent  `json:"parents,omitempty"`
+	ID                string           `json:"id"`
+	Kind              StateKind        `json:"kind"`
+	TaskID            string           `json:"task_id,omitempty"`
+	AttemptID         string           `json:"attempt_id,omitempty"`
+	CanonicalAnchorID string           `json:"canonical_anchor_id,omitempty"`
+	SourceTree        string           `json:"source_tree"`
+	GitCommit         string           `json:"git_commit"`
+	Prompt            string           `json:"prompt,omitempty"`
+	Summary           string           `json:"summary,omitempty"`
+	Agent             string           `json:"agent,omitempty"`
+	Provenance        *StateProvenance `json:"provenance,omitempty"`
+	Digest            string           `json:"digest"`
+	CreatedAt         time.Time        `json:"created_at"`
+	Parents           []Parent         `json:"parents,omitempty"`
+}
+
+// StateProvenance is the durable authorization proof for a tree-producing
+// state. It binds the exact base and candidate trees, every authorized input,
+// and the exact object/mode delta that was observed.
+type StateProvenance struct {
+	Version           int               `json:"version"`
+	Operation         string            `json:"operation"`
+	BaseStateID       string            `json:"base_state_id,omitempty"`
+	BaseTree          string            `json:"base_tree"`
+	CandidateTree     string            `json:"candidate_tree"`
+	Inputs            []ProvenanceInput `json:"inputs,omitempty"`
+	Manifest          []TreeDelta       `json:"manifest,omitempty"`
+	ManifestDigest    string            `json:"manifest_digest"`
+	CompositionDigest string            `json:"composition_digest"`
+}
+
+type ProvenanceInput struct {
+	Role          string `json:"role"`
+	StateID       string `json:"state_id,omitempty"`
+	BaseTree      string `json:"base_tree"`
+	CandidateTree string `json:"candidate_tree"`
+}
+
+type TreeDelta struct {
+	Status  string `json:"status"`
+	OldPath string `json:"old_path,omitempty"`
+	NewPath string `json:"new_path,omitempty"`
+	OldMode string `json:"old_mode,omitempty"`
+	NewMode string `json:"new_mode,omitempty"`
+	OldOID  string `json:"old_oid,omitempty"`
+	NewOID  string `json:"new_oid,omitempty"`
 }
 
 type Task struct {
@@ -73,14 +106,15 @@ type GraphRow struct {
 }
 
 type Status struct {
-	Root         string            `json:"root"`
-	AcceptedHead State             `json:"accepted_head"`
-	Attempts     []Attempt         `json:"attempts"`
-	RootStatus   string            `json:"root_status"`
-	RootStateID  string            `json:"root_state_id,omitempty"`
-	Git          GitStatus         `json:"git"`
-	Publication  PublicationStatus `json:"publication"`
-	Warnings     []string          `json:"warnings,omitempty"`
+	Root               string            `json:"root"`
+	AcceptedHead       State             `json:"accepted_head"`
+	Attempts           []Attempt         `json:"attempts"`
+	RootStatus         string            `json:"root_status"`
+	RootStateID        string            `json:"root_state_id,omitempty"`
+	AcceptedProvenance string            `json:"accepted_provenance"`
+	Git                GitStatus         `json:"git"`
+	Publication        PublicationStatus `json:"publication"`
+	Warnings           []string          `json:"warnings,omitempty"`
 }
 
 // GitStatus separates Hop's accepted-tree projection from the user's actual
@@ -318,6 +352,19 @@ func (e *ConflictError) Error() string {
 type RootConflictError struct {
 	Paths  []string
 	Reason string
+}
+
+type ProvenanceError struct {
+	Operation string   `json:"operation,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
+	Reason    string   `json:"reason"`
+}
+
+func (e *ProvenanceError) Error() string {
+	if len(e.Paths) > 0 {
+		return fmt.Sprintf("hop: %s provenance verification failed for %v: %s", e.Operation, e.Paths, e.Reason)
+	}
+	return fmt.Sprintf("hop: %s provenance verification failed: %s", e.Operation, e.Reason)
 }
 
 func (e *RootConflictError) Error() string {

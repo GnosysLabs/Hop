@@ -73,7 +73,10 @@ Hop's private same-forge Git fetch and push operations.
 working tree. Its JSON separates the accepted tree projected into the visible
 root from the active branch and index. `git.projection_only_changes=true` means
 raw Git dirtiness is expected projection output, not uncommitted user work.
-`git.user_worktree_paths` and `git.user_index_paths` contain genuine edits.
+`git.user_worktree_paths` and `git.user_index_paths` contain filesystem/index
+differences, while `accepted_provenance` reports whether the accepted
+transition's exact-tree authorization proof is `verified`,
+`legacy_unverified`, or `invalid`.
 
 Publication is `not_configured`, `pending`, `current`, `failed`, or `unknown`
 for a pre-migration accepted state. Failures retain a sanitized error category,

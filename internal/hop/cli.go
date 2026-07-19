@@ -639,6 +639,7 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		value = status
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Accepted: %s · tree %s\n", status.AcceptedHead.ID, shortHash(status.AcceptedHead.SourceTree))
+			fmt.Fprintf(stdout, "Provenance: %s\n", status.AcceptedProvenance)
 			switch status.RootStatus {
 			case "synchronized":
 				fmt.Fprintln(stdout, "Root: synchronized")
@@ -1187,6 +1188,7 @@ func printCLIError(err error, jsonOutput bool, stdout, stderr io.Writer) int {
 	code := 1
 	var conflict *ConflictError
 	var rootConflict *RootConflictError
+	var provenance *ProvenanceError
 	var stale *StaleHeadError
 	var failed *CheckFailedError
 	switch {
@@ -1194,13 +1196,26 @@ func printCLIError(err error, jsonOutput bool, stdout, stderr io.Writer) int {
 		code = 20
 	case errors.As(err, &rootConflict):
 		code = 23
+	case errors.As(err, &provenance):
+		code = 24
 	case errors.As(err, &stale):
 		code = 21
 	case errors.As(err, &failed):
 		code = 22
 	}
 	if jsonOutput {
-		writeJSON(stdout, map[string]any{"ok": false, "error": err.Error(), "exit_code": code})
+		payload := map[string]any{"ok": false, "error": err.Error(), "exit_code": code}
+		if provenance != nil {
+			payload["category"] = "provenance_verification_failed"
+			payload["operation"] = provenance.Operation
+			payload["paths"] = provenance.Paths
+			payload["reason"] = provenance.Reason
+		} else if rootConflict != nil {
+			payload["category"] = "visible_root_unproven"
+			payload["paths"] = rootConflict.Paths
+			payload["reason"] = rootConflict.Reason
+		}
+		writeJSON(stdout, payload)
 	} else {
 		fmt.Fprintf(stderr, "hop: %v\n", err)
 		if conflict != nil && len(conflict.Paths) > 0 {

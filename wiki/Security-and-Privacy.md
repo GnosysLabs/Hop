@@ -67,9 +67,20 @@ revoke provider account tokens.
 ## Filesystem safety
 
 Hop does not use `reset --hard`, move the active branch, or write the user's
-real Git index. Ordinary nonignored visible-root edits are captured into Hop's
-accepted lineage before merging. Synchronization remains fail-closed for
-ignored destinations, staged/index state, and filesystem races.
+real Git index. Ordinary nonignored visible-root edits can be captured when the
+active branch/index tree proves the materialized base. If the visible Hop tree
+is projected over a genuinely different stale branch tree, implicit capture is
+blocked: Hop cannot safely distinguish deliberate edits from an external stale
+checkout and will not infer mass changes or deletions. Synchronization also
+remains fail-closed for ignored destinations, staged/index state, and
+filesystem races.
+
+New checkpoints, proposals, captures, reconciliation results, remote
+compositions, lands, accepts, retries, and undos carry exact-tree authorization
+proofs. Before accepted state advances, Hop recomputes the changed-path
+manifest and verifies exact Git object IDs and modes. `hop status` reports
+`accepted_provenance` as `verified`, `legacy_unverified`, or `invalid`; `hop
+doctor` recomputes proofs and reports tampering or missing Git inputs.
 
 Automatic push uses the existing Git transport for every host. For a legacy
 Gitea forge selected by `hop auth login`, Hop stores the OAuth grant only in the OS keychain

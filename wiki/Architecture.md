@@ -45,6 +45,19 @@ initialization when `.hop` is already tracked as user-owned project content.
 
 ## Acceptance consistency
 
+Every new checkpoint and proposal stores a versioned authorization proof: its
+canonical base tree, exact candidate tree, immutable inputs, and a manifest of
+every changed path with before/after object IDs and modes. The manifest covers
+deletions, renames, executable bits, symlinks, and submodule gitlinks and is
+bound into the state's digest.
+
+Before any accepted-head compare-and-swap, an independent verifier recomputes
+the manifest from Git objects and proves that every candidate path is present
+in an authorized proposal, reconciliation, remote, visible-root, or undo input.
+Anything outside that set must retain the canonical parent's exact object ID
+and mode. The database rejects non-initial accepted states without this proof,
+so a service call cannot bypass the verifier accidentally.
+
 Acceptance is serialized and compare-and-swapped. SQLite is authoritative;
 derived Git refs can be repaired by `hop doctor --repair`. Visible-root landing
 also tracks which accepted state is physically visible, allowing safe catch-up
@@ -54,6 +67,13 @@ After that local transaction succeeds, Hop attempts a non-forced push of the
 accepted commit to the inferred upstream branch. Remote publication is derived
 and retryable: its failure cannot roll back or corrupt the durable local
 acceptance.
+
+An existing branch whose tree is older than the claimed visible Hop projection
+creates an information-theoretic ambiguity: the filesystem alone cannot prove
+whether a large diff is deliberate work or a stale checkout plus a few edits.
+Hop therefore refuses implicit visible-root capture in that condition. It does
+not advance accepted state or infer deletions. Agent proposals remain unaffected
+because their base and workspace are immutable and explicit.
 
 For the full product direction, read the
 [product blueprint](../docs/product-blueprint.md).

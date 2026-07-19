@@ -123,21 +123,25 @@ to the user without intervening work.
 The initial task prompt authorizes the agent to run `hop land` after successful
 validation; a second user approval is not required. Manual review is an opt-in
 mode: stop at the proposal only when the user explicitly asks to review or
-approve before acceptance. Validation failure, protected staged/index state or
-ignored-root collisions, unresolved product ambiguity, or newly required
+approve before acceptance. Validation failure, protected staged/index state,
+an unprovable changed root over a different stale branch tree, ignored-root
+collisions, unresolved product ambiguity, or newly required
 destructive/external scope stops automatic acceptance. Path overlap, ordinary
-nonignored root edits, and a stale accepted head do not: Hop captures, merges,
-retries, or prepares agent reconciliation.
+nonignored root edits on a proven base, and a stale accepted head do not: Hop
+captures, merges, retries, or prepares agent reconciliation.
 
 `hop land` is the interactive working-root operation. It performs a real Git
 three-way content merge, so compatible edits in the same file and identical
 changes compose automatically. It validates and advances accepted state, then
 safely materializes that tree into the selected visible project root. Ordinary
-nonignored root edits are first captured as an explicit accepted transition,
-then merged against the proposal; genuine overlaps enter the same agent
-reconciliation flow. Staged/index state and ignored destination collisions
-remain protected. Materialization uses a disposable index and never moves HEAD,
-the active branch, or the user's real index.
+nonignored root edits are first captured as an explicit accepted transition
+only when their visible base is provable, then merged against the proposal;
+genuine overlaps enter the same agent reconciliation flow. When an existing
+branch's tree differs from Hop's claimed materialized tree, changed visible
+files are ambiguous and capture fails closed instead of authorizing the whole
+filesystem diff. Staged/index state and ignored destination collisions remain
+protected. Materialization uses a disposable index and never moves HEAD, the
+active branch, or the user's real index.
 
 This means raw `git status` is not an authoritative description of user work in
 the visible root. When the accepted tree is projected over an older branch or
@@ -221,6 +225,7 @@ protocol and must not be required for repositories hosted elsewhere.
 | `21` | Accepted or attempt head changed during compare-and-swap |
 | `22` | Validation command failed |
 | `23` | Visible project root diverged or contains an overwrite collision |
+| `24` | Exact-tree provenance or authorization-manifest verification failed |
 
 A failed `hop check` or final landing check persists its evidence. A blocked or failed landing does not advance accepted state.
 

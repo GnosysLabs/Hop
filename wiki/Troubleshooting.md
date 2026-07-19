@@ -82,10 +82,21 @@ workspace, and rerun the check.
 
 Hop found protected staged/index state, ignored content, a conflict with a
 newer accepted projection, or a materialization race. Ordinary nonignored root
-edits are captured automatically by `hop land`, so code `23` now means Hop
-cannot safely infer a worktree-only intent. Preserve the reported paths and
-resolve that protected state intentionally. Do not bypass this with `hop
-accept` in interactive workflows.
+edits are captured automatically only when their base is provable. If an older
+branch tree sits beneath a newer Hop projection, a changed root is ambiguous:
+it may be deliberate work, or a stale checkout plus a few edits. Hop refuses to
+capture the entire diff and does not advance accepted state. Restore the known
+accepted projection with `hop sync` only after preserving any intended files,
+or move the intended change into a Hop attempt based on the current accepted
+state. Do not bypass this with `hop accept` in interactive workflows.
+
+## Exit code 24: provenance verification failed
+
+The candidate, its authorization manifest, or one of its immutable tree inputs
+does not match. The accepted head did not advance. Run `hop doctor`; do not
+retry acceptance blindly or manually rewrite Hop's SQLite data or hidden refs.
+If the state is from an older release, `hop status` may truthfully report
+`legacy_unverified`; create a fresh proposal on the current accepted state.
 
 ## Internal ref or object warning
 

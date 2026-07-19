@@ -100,6 +100,9 @@ intentionally projects the accepted tree without moving the active branch or
 real index, so raw `git status` may show a large dirty tree that is entirely
 projection-only. Never describe those paths as user edits unless Hop reports
 `git.user_worktree_changed` or `git.user_index_changed`.
+If `accepted_provenance` is `invalid`, stop acceptance and run `hop doctor`.
+`legacy_unverified` identifies a transition created before durable manifests;
+make a fresh proposal rather than treating it as current proof.
 
 ## Use the repository's Git host
 
@@ -173,6 +176,13 @@ hosts.
    ```
 
    Same-file edits with compatible hunks merge automatically.
+
+   Exit `23` may mean the visible folder differs while a genuinely older Git
+   branch tree sits beneath Hop's newer projection. In that state the
+   filesystem cannot prove which paths were deliberate edits, so Hop refuses
+   implicit capture and does not infer deletions. Preserve intended files and
+   move the change into the returned current-base attempt; never bypass the
+   refusal with controller-only `hop accept`.
 
 7. If `hop land` reports a prepared reconciliation prompt/workspace, continue
    immediately in that returned workspace. Do not stop or ask the user to

@@ -496,6 +496,20 @@ func (s *Service) checkpointExistingAttempt(ctx context.Context, attempt Attempt
 		CreatedAt:         time.Now().UTC(),
 		Parents:           parents,
 	}
+	baseStateID := checkpoint.CanonicalAnchorID
+	if baseStateID == "" {
+		baseStateID = attempt.BaseStateID
+	}
+	base, err := s.Store.GetState(ctx, baseStateID)
+	if err != nil {
+		return State{}, err
+	}
+	checkpoint.Provenance, err = s.buildProvenance(ctx, "checkpoint", base, tree, []ProvenanceInput{{
+		Role: "workspace", StateID: head.ID, BaseTree: base.SourceTree, CandidateTree: tree,
+	}})
+	if err != nil {
+		return State{}, err
+	}
 	checkpoint.Digest, err = digestState(checkpoint, parents)
 	if err != nil {
 		return State{}, err
@@ -637,12 +651,14 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 		return ProposalResult{}, err
 	}
 	var reconciliationConflicts []string
+	var reconciliationRemoteTip string
 	if reconciliation {
-		conflicts, ok := decodeReconciliationConflicts(reconciliationPrompt.Summary)
+		metadata, ok := decodeReconciliationMetadata(reconciliationPrompt.Summary)
 		if !ok {
 			return ProposalResult{}, fmt.Errorf("reconciliation prompt %s has invalid conflict metadata", reconciliationPrompt.ID)
 		}
-		reconciliationConflicts = conflicts
+		reconciliationConflicts = metadata.Conflicts
+		reconciliationRemoteTip = metadata.RemoteTip
 	}
 	workspaceRepo, err := OpenRepository(attempt.Workspace)
 	if err != nil {
@@ -698,6 +714,34 @@ func (s *Service) Propose(ctx context.Context, stateID, summary string) (Proposa
 		Agent:             attempt.Agent,
 		CreatedAt:         time.Now().UTC(),
 		Parents:           parents,
+	}
+	base, err := s.Store.GetState(ctx, canonicalAnchorID)
+	if err != nil {
+		return ProposalResult{}, err
+	}
+	provenanceInputs := []ProvenanceInput{{
+		Role: "workspace", StateID: attempt.HeadStateID, BaseTree: base.SourceTree, CandidateTree: tree,
+	}}
+	if reconciliationRemoteTip != "" {
+		mergeBase, mergeErr := s.Repo.MergeBase(ctx, base.GitCommit, reconciliationRemoteTip)
+		if mergeErr != nil {
+			return ProposalResult{}, mergeErr
+		}
+		mergeBaseTree, treeErr := s.Repo.resolveTree(ctx, mergeBase)
+		if treeErr != nil {
+			return ProposalResult{}, treeErr
+		}
+		remoteTree, treeErr := s.Repo.resolveTree(ctx, reconciliationRemoteTip)
+		if treeErr != nil {
+			return ProposalResult{}, treeErr
+		}
+		provenanceInputs = append(provenanceInputs, ProvenanceInput{
+			Role: "reconciliation_remote", BaseTree: mergeBaseTree, CandidateTree: remoteTree,
+		})
+	}
+	proposal.Provenance, err = s.buildProvenance(ctx, "proposal", base, tree, provenanceInputs)
+	if err != nil {
+		return ProposalResult{}, err
 	}
 	proposal.Digest, err = digestState(proposal, parents)
 	if err != nil {
@@ -1191,6 +1235,17 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	if existing, exists, err := s.Store.AcceptedForProposal(ctx, proposal.ID); err != nil {
 		return AcceptResult{}, err
 	} else if exists {
+		parent, parentErr := s.Store.ParentByRole(ctx, existing.ID, "canonical_parent")
+		if parentErr != nil {
+			return AcceptResult{}, parentErr
+		}
+		base, baseErr := s.Store.GetState(ctx, parent.StateID)
+		if baseErr != nil {
+			return AcceptResult{}, baseErr
+		}
+		if proofErr := s.verifyStoredProvenance(ctx, existing, base); proofErr != nil {
+			return AcceptResult{}, fmt.Errorf("existing acceptance cannot be safely retried: %w", proofErr)
+		}
 		result := AcceptResult{State: existing}
 		if materialize {
 			captured, paths, captureErr := s.captureVisibleRoot(ctx)
@@ -1235,6 +1290,9 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	if err != nil {
 		return AcceptResult{}, err
 	}
+	if err := s.verifyStoredProvenance(ctx, proposal, base); err != nil {
+		return AcceptResult{}, fmt.Errorf("proposal authorization proof is invalid: %w", err)
+	}
 	current, err := s.Store.AcceptedHead(ctx)
 	if err != nil {
 		return AcceptResult{}, err
@@ -1249,6 +1307,9 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 	}
 	proposalPaths = withoutPortableHopRecords(proposalPaths)
 	currentPaths = withoutPortableHopRecords(currentPaths)
+	acceptInputs := []ProvenanceInput{{
+		Role: "proposal", StateID: proposal.ID, BaseTree: base.SourceTree, CandidateTree: proposal.SourceTree,
+	}}
 	finalTree := proposal.SourceTree
 	if current.SourceTree != base.SourceTree {
 		var mergeConflicts []string
@@ -1300,6 +1361,17 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 			if len(remoteConflicts) > 0 {
 				return AcceptResult{}, &ConflictError{Paths: remoteConflicts, RemoteTip: remoteTip}
 			}
+			mergeBaseTree, treeErr := s.Repo.resolveTree(ctx, mergeBase)
+			if treeErr != nil {
+				return AcceptResult{}, treeErr
+			}
+			remoteTree, treeErr := s.Repo.resolveTree(ctx, remoteTip)
+			if treeErr != nil {
+				return AcceptResult{}, treeErr
+			}
+			acceptInputs = append(acceptInputs, ProvenanceInput{
+				Role: "remote", BaseTree: mergeBaseTree, CandidateTree: remoteTree,
+			})
 		}
 		commitParents = []string{remoteTip, current.GitCommit}
 	}
@@ -1401,6 +1473,14 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		{StateID: current.ID, Role: "canonical_parent", Order: 0},
 		{StateID: proposal.ID, Role: "proposal_parent", Order: 1},
 	})
+	operation := "accept"
+	if materialize {
+		operation = "land"
+	}
+	provenance, err := s.verifyAcceptance(ctx, current, finalTree, acceptInputs, operation)
+	if err != nil {
+		return AcceptResult{}, err
+	}
 	accepted := State{
 		ID:                acceptedID,
 		Kind:              StateAccepted,
@@ -1411,6 +1491,7 @@ func (s *Service) accept(ctx context.Context, proposalID string, checkCommand []
 		GitCommit:         commit,
 		Summary:           proposal.Summary,
 		Agent:             proposal.Agent,
+		Provenance:        provenance,
 		CreatedAt:         time.Now().UTC(),
 		Parents:           parents,
 	}
@@ -1490,6 +1571,16 @@ func (s *Service) captureVisibleRoot(ctx context.Context) (*State, []string, err
 	if actualTree == materialized.SourceTree {
 		return nil, nil, nil
 	}
+	gitStatus, err := s.Repo.GitStatusForAccepted(ctx, materialized.GitCommit, materialized.SourceTree)
+	if err != nil {
+		return nil, nil, err
+	}
+	if gitStatus.ProjectionOverStaleRef {
+		return nil, nil, &RootConflictError{
+			Paths:  gitStatus.UserWorktreePaths,
+			Reason: "visible project root differs from its Hop materialization while the selected Git branch/index is stale; Hop cannot prove which paths were deliberately edited, so it refused to capture or delete anything (restore/sync the accepted projection, or explicitly commit/adopt the intended changes from a current base)",
+		}
+	}
 	paths, err := s.Repo.ChangedPaths(ctx, materialized.SourceTree, actualTree)
 	if err != nil {
 		return nil, nil, err
@@ -1525,6 +1616,22 @@ func (s *Service) captureVisibleRoot(ctx context.Context) (*State, []string, err
 		return nil, nil, err
 	}
 	parents := canonicalizeParents([]Parent{{StateID: current.ID, Role: "canonical_parent", Order: 0}})
+	provenance, err := s.verifyAcceptance(ctx, current, finalTree, []ProvenanceInput{{
+		Role: "visible_root", StateID: materialized.ID, BaseTree: materialized.SourceTree, CandidateTree: actualTree,
+	}}, "capture-visible-root")
+	if err != nil {
+		return nil, nil, err
+	}
+	// The project lock serializes Hop, not arbitrary editors or Git commands.
+	// Re-snapshot immediately before the accepted CAS so a racing filesystem
+	// change cannot enter under a proof built for an older tree.
+	verifiedTree, err := s.Repo.WorktreeTree(ctx, materialized.SourceTree)
+	if err != nil {
+		return nil, nil, err
+	}
+	if verifiedTree != actualTree {
+		return nil, nil, &RootConflictError{Reason: "visible project root changed while Hop was proving its authorization manifest; retry from a stable root"}
+	}
 	captured := State{
 		ID:                capturedID,
 		Kind:              StateAccepted,
@@ -1533,6 +1640,7 @@ func (s *Service) captureVisibleRoot(ctx context.Context) (*State, []string, err
 		GitCommit:         commit,
 		Summary:           "Capture out-of-band visible project changes",
 		Agent:             "hop",
+		Provenance:        provenance,
 		CreatedAt:         time.Now().UTC(),
 		Parents:           parents,
 	}
@@ -2144,6 +2252,12 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 		{StateID: current.ID, Role: "reverts", Order: 1},
 		{StateID: previous.ID, Role: "restores", Order: 2},
 	})
+	provenance, err := s.verifyAcceptance(ctx, current, previous.SourceTree, []ProvenanceInput{{
+		Role: "explicit_undo", StateID: previous.ID, BaseTree: current.SourceTree, CandidateTree: previous.SourceTree,
+	}}, "undo")
+	if err != nil {
+		return State{}, err
+	}
 	undo := State{
 		ID:                undoID,
 		Kind:              StateAccepted,
@@ -2152,6 +2266,7 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 		GitCommit:         commit,
 		Summary:           "Undo " + current.ID,
 		Agent:             "hop",
+		Provenance:        provenance,
 		CreatedAt:         time.Now().UTC(),
 		Parents:           parents,
 	}
@@ -2279,6 +2394,23 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	status, err := s.Store.Status(ctx)
 	if err != nil {
 		return Status{}, err
+	}
+	status.AcceptedProvenance = "legacy_unverified"
+	if status.AcceptedHead.Provenance == nil && status.AcceptedHead.CanonicalAnchorID == "" {
+		status.AcceptedProvenance = "verified"
+	} else if status.AcceptedHead.Provenance != nil {
+		base, baseErr := s.Store.GetState(ctx, status.AcceptedHead.Provenance.BaseStateID)
+		if baseErr == nil {
+			if proofErr := s.verifyStoredProvenance(ctx, status.AcceptedHead, base); proofErr == nil {
+				status.AcceptedProvenance = "verified"
+			} else {
+				status.AcceptedProvenance = "invalid"
+				status.Warnings = append(status.Warnings, proofErr.Error())
+			}
+		} else {
+			status.AcceptedProvenance = "invalid"
+			status.Warnings = append(status.Warnings, "accepted-state provenance base cannot be loaded: "+baseErr.Error())
+		}
 	}
 	rootState, matches, err := s.visibleRootState(ctx)
 	if err != nil {
@@ -2425,6 +2557,22 @@ func (s *Service) Doctor(ctx context.Context, repair bool) (DoctorReport, error)
 		if problem := stateParentProblem(state, row.Parents); problem != "" {
 			report.OK = false
 			report.Problems = append(report.Problems, problem)
+		}
+		if state.Provenance == nil {
+			needsProof := state.Kind == StateCheckpoint || state.Kind == StateProposal ||
+				(state.Kind == StateAccepted && !(state.CanonicalAnchorID == "" && len(row.Parents) == 0))
+			if needsProof {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("state %s predates durable authorization manifests and is legacy-unverified", state.ID))
+			}
+		} else {
+			base, baseErr := s.Store.GetState(ctx, state.Provenance.BaseStateID)
+			if baseErr != nil {
+				report.OK = false
+				report.Problems = append(report.Problems, fmt.Sprintf("state %s provenance base cannot be loaded: %v", state.ID, baseErr))
+			} else if proofErr := s.verifyStoredProvenance(ctx, state, base); proofErr != nil {
+				report.OK = false
+				report.Problems = append(report.Problems, fmt.Sprintf("state %s provenance is invalid: %v", state.ID, proofErr))
+			}
 		}
 		refName := "states/" + state.ID
 		refCommit, exists, readErr := s.Repo.ReadHiddenRef(ctx, refName)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -530,15 +531,15 @@ func TestParkedAttemptStatusUsesPortablePromptVocabulary(t *testing.T) {
 	}
 }
 
-func TestSchemaSixMigrationPreservesExistingAcceptedState(t *testing.T) {
+func TestSchemaSevenMigrationPreservesExistingAcceptedState(t *testing.T) {
 	t.Setenv("HOP_ROOT", "")
 	ctx := context.Background()
 	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
 	root := service.Root
-	if _, err := service.Store.db.ExecContext(ctx, "DROP TABLE publications"); err != nil {
+	if _, err := service.Store.db.ExecContext(ctx, "ALTER TABLE states DROP COLUMN provenance_json"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Store.db.ExecContext(ctx, "PRAGMA user_version = 5"); err != nil {
+	if _, err := service.Store.db.ExecContext(ctx, "PRAGMA user_version = 6"); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Close(); err != nil {
@@ -557,7 +558,7 @@ func TestSchemaSixMigrationPreservesExistingAcceptedState(t *testing.T) {
 		t.Fatalf("migration changed accepted state: %#v, want %#v", head, initial)
 	}
 	var version int
-	if err := reopened.Store.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 6 {
+	if err := reopened.Store.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 7 {
 		t.Fatalf("schema version = %d, err=%v", version, err)
 	}
 	if _, found, err := reopened.Store.PublicationForState(ctx, initial.ID); err != nil || found {
@@ -2750,6 +2751,170 @@ func TestLandCapturesDivergedVisibleRootAndMergesProposal(t *testing.T) {
 	status, err := service.Status(ctx)
 	if err != nil || status.RootStatus != "synchronized" || status.AcceptedHead.ID != landed.State.ID {
 		t.Fatalf("status = %#v, err=%v", status, err)
+	}
+}
+
+func TestLandRejectsUnprovenVisibleRootOverStaleBranch(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runGitTest(t, root, "init", "--quiet")
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	writeTestFile(t, filepath.Join(root, "keep.txt"), "keep\n")
+	runGitTest(t, root, "add", "base.txt", "keep.txt")
+	runGitTest(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "stale branch B")
+	service, initial, err := InitProject(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	seed, err := service.CreatePrompt(ctx, "Advance the accepted tree", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(seed.Workspace, "base.txt"), "accepted\n")
+	writeTestFile(t, filepath.Join(seed.Workspace, "accepted-only.txt"), "must survive\n")
+	seedProposal, err := service.Propose(ctx, seed.Prompt.ID, "Advance accepted tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := service.Land(ctx, seedProposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	work, err := service.CreatePrompt(ctx, "Add the requested feature", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(work.Workspace, "feature.txt"), "feature\n")
+	proposal, err := service.Propose(ctx, work.Prompt.ID, "Add feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduce the 1.0.10 incident: the durable materialized marker still says
+	// the root is accepted A, while an external stale-branch projection replaces
+	// the visible files with B. Two genuine visible edits are then made on B.
+	if err := service.Repo.MaterializeTree(ctx, accepted.State.SourceTree, initial.SourceTree); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(service.Root, "base.txt"), "visible edit one\n")
+	writeTestFile(t, filepath.Join(service.Root, "visible-two.txt"), "visible edit two\n")
+
+	_, err = service.Land(ctx, proposal.Proposal.ID, nil)
+	var conflict *RootConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("land error = %v, want RootConflictError", err)
+	}
+	head, headErr := service.Store.AcceptedHead(ctx)
+	if headErr != nil {
+		t.Fatal(headErr)
+	}
+	if head.ID != accepted.State.ID {
+		t.Fatalf("unproven root advanced accepted head to %s, want %s", head.ID, accepted.State.ID)
+	}
+	if _, statErr := os.Stat(filepath.Join(service.Root, "accepted-only.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("test setup no longer reproduces stale B projection: %v", statErr)
+	}
+}
+
+func TestAcceptanceVerifierRejectsUnauthorizedDeletion(t *testing.T) {
+	ctx := context.Background()
+	service, base := newTestProject(t, map[string]string{"keep.txt": "keep\n"})
+	started, err := service.CreatePrompt(ctx, "Add feature", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "feature.txt"), "feature\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Add feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(started.Workspace, "keep.txt")); err != nil {
+		t.Fatal(err)
+	}
+	workspaceRepo, err := OpenRepository(started.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, forgedTree, err := workspaceRepo.Snapshot(ctx, "forged candidate\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.verifyAcceptance(ctx, base, forgedTree, []ProvenanceInput{{
+		Role: "proposal", StateID: proposal.Proposal.ID, BaseTree: base.SourceTree, CandidateTree: proposal.Proposal.SourceTree,
+	}}, "test-forgery")
+	var provenance *ProvenanceError
+	if !errors.As(err, &provenance) || !slices.Contains(provenance.Paths, "keep.txt") {
+		t.Fatalf("verification error = %#v, want unauthorized keep.txt deletion", err)
+	}
+}
+
+func TestTreeDeltaPreservesRenameModeSymlinkAndGitlinkIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink identity requires a symlink-capable test filesystem")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	runGitTest(t, root, "init", "--quiet")
+	writeTestFile(t, filepath.Join(root, "old.txt"), "rename me\n")
+	writeTestFile(t, filepath.Join(root, "mode.txt"), "mode\n")
+	if err := os.Symlink("old.txt", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "old.txt", "mode.txt", "link")
+	runGitTest(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "gitlink target one")
+	firstCommit := runGitTest(t, root, "rev-parse", "HEAD")
+	writeTestFile(t, filepath.Join(root, "seed.txt"), "second\n")
+	runGitTest(t, root, "add", "seed.txt")
+	runGitTest(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "gitlink target two")
+	secondCommit := runGitTest(t, root, "rev-parse", "HEAD")
+	runGitTest(t, root, "update-index", "--add", "--cacheinfo", "160000,"+firstCommit+",module")
+	baseTree := runGitTest(t, root, "write-tree")
+
+	if err := os.Rename(filepath.Join(root, "old.txt"), filepath.Join(root, "renamed.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "mode.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("renamed.txt", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "update-index", "--add", "--cacheinfo", "160000,"+secondCommit+",module")
+	candidateTree := runGitTest(t, root, "write-tree")
+	repo, err := OpenRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deltas, err := repo.TreeDelta(ctx, baseTree, candidateTree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := make(map[string]TreeDelta)
+	for _, delta := range deltas {
+		path := delta.NewPath
+		if path == "" {
+			path = delta.OldPath
+		}
+		byPath[path] = delta
+	}
+	if rename := byPath["renamed.txt"]; !strings.HasPrefix(rename.Status, "R") || rename.OldPath != "old.txt" || rename.OldOID == "" || rename.NewOID == "" {
+		t.Fatalf("rename delta = %#v", rename)
+	}
+	if mode := byPath["mode.txt"]; mode.OldMode != "100644" || mode.NewMode != "100755" || mode.OldOID != mode.NewOID {
+		t.Fatalf("mode delta = %#v", mode)
+	}
+	if link := byPath["link"]; link.OldMode != "120000" || link.NewMode != "120000" || link.OldOID == link.NewOID {
+		t.Fatalf("symlink delta = %#v", link)
+	}
+	if module := byPath["module"]; module.OldMode != "160000" || module.NewMode != "160000" || module.OldOID != firstCommit || module.NewOID != secondCommit {
+		t.Fatalf("gitlink delta = %#v", module)
 	}
 }
 

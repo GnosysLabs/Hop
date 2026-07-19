@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 6
+const schemaVersion = 7
 
 var (
 	ErrNotFound            = errors.New("hop: not found")
@@ -290,6 +290,12 @@ var migrations = []migration{
 				retryable INTEGER NOT NULL CHECK (retryable IN (0, 1))
 			) STRICT`,
 			`CREATE INDEX IF NOT EXISTS publications_status_attempted_idx ON publications(status, attempted_at, accepted_state_id)`,
+		},
+	},
+	{
+		version: 7,
+		statements: []string{
+			`ALTER TABLE states ADD COLUMN provenance_json TEXT NOT NULL DEFAULT ''`,
 		},
 	},
 }
@@ -870,6 +876,18 @@ func (s *Store) AppendState(
 	}
 	parents = canonicalizeParents(parents)
 	state.Parents = parents
+	if state.Kind == StateCheckpoint || state.Kind == StateProposal {
+		if state.Provenance == nil {
+			return State{}, &ProvenanceError{Operation: string(state.Kind), Reason: "tree-producing attempt state has no durable authorization proof"}
+		}
+		base, err := stateTx(ctx, tx, state.Provenance.BaseStateID)
+		if err != nil {
+			return State{}, fmt.Errorf("read provenance base: %w", err)
+		}
+		if err := validateStoredProvenance(state, base); err != nil {
+			return State{}, err
+		}
+	}
 
 	if err := insertStateTx(ctx, tx, state, parents); err != nil {
 		return State{}, err
@@ -992,6 +1010,9 @@ func (s *Store) CASAccept(
 	}
 	if accepted.GitCommit == "" {
 		accepted.GitCommit = current.GitCommit
+	}
+	if err := validateStoredProvenance(accepted, current); err != nil {
+		return State{}, err
 	}
 
 	if err := insertStateTx(ctx, tx, accepted, parents); err != nil {
@@ -2123,7 +2144,8 @@ func (s *Store) ListEvents(ctx context.Context, limit int) ([]Event, error) {
 }
 
 const stateColumns = `id, kind, COALESCE(task_id, ''), COALESCE(attempt_id, ''),
-	COALESCE(canonical_anchor_id, ''), source_tree, git_commit, prompt, summary, agent, digest, created_at`
+	COALESCE(canonical_anchor_id, ''), source_tree, git_commit, prompt, summary, agent,
+	provenance_json, digest, created_at`
 
 const attemptColumns = `id, task_id, agent, workspace, base_state_id, COALESCE(head_state_id, ''), status, created_at`
 
@@ -2135,10 +2157,10 @@ type scanner interface {
 
 func scanState(row scanner) (State, error) {
 	var state State
-	var kind, created string
+	var kind, provenance, created string
 	if err := row.Scan(
 		&state.ID, &kind, &state.TaskID, &state.AttemptID, &state.CanonicalAnchorID,
-		&state.SourceTree, &state.GitCommit, &state.Prompt, &state.Summary, &state.Agent,
+		&state.SourceTree, &state.GitCommit, &state.Prompt, &state.Summary, &state.Agent, &provenance,
 		&state.Digest, &created,
 	); err != nil {
 		return State{}, err
@@ -2148,6 +2170,12 @@ func scanState(row scanner) (State, error) {
 		return State{}, err
 	}
 	state.Kind = StateKind(kind)
+	if provenance != "" {
+		state.Provenance = &StateProvenance{}
+		if err := json.Unmarshal([]byte(provenance), state.Provenance); err != nil {
+			return State{}, fmt.Errorf("decode state provenance: %w", err)
+		}
+	}
 	state.CreatedAt = createdAt
 	return state, nil
 }
@@ -2253,13 +2281,21 @@ func insertStateTx(ctx context.Context, tx *sql.Tx, state State, parents []Paren
 			return fmt.Errorf("hop: refusing to persist an unredacted credential in state %s", name)
 		}
 	}
+	provenance := ""
+	if state.Provenance != nil {
+		payload, err := json.Marshal(state.Provenance)
+		if err != nil {
+			return fmt.Errorf("encode state provenance: %w", err)
+		}
+		provenance = string(payload)
+	}
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO states(
 			id, kind, task_id, attempt_id, canonical_anchor_id, source_tree, git_commit,
-			prompt, summary, agent, digest, created_at
-		) VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`,
+			prompt, summary, agent, provenance_json, digest, created_at
+		) VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`,
 		state.ID, string(state.Kind), state.TaskID, state.AttemptID, state.CanonicalAnchorID,
-		state.SourceTree, state.GitCommit, state.Prompt, state.Summary, state.Agent,
+		state.SourceTree, state.GitCommit, state.Prompt, state.Summary, state.Agent, provenance,
 		state.Digest, formatTime(state.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("insert state %q: %w", state.ID, err)

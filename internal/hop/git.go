@@ -92,6 +92,11 @@ type PathChange struct {
 	NewPath string `json:"new_path,omitempty"`
 }
 
+type TreeEntry struct {
+	Mode string
+	OID  string
+}
+
 // NewGitStore returns a Git store with Hop's controlled commit identity.
 func NewGitStore() *GitStore {
 	return &GitStore{
@@ -384,7 +389,11 @@ func (r *Repository) GitStatusForAccepted(ctx context.Context, acceptedCommit, a
 			return status, err
 		}
 	}
-	status.ProjectionOverStaleRef = !localExists || localTip != acceptedCommit
+	// A different commit with the exact accepted tree is still a proven base.
+	// The projection is ambiguous only when the branch's tree differs (or HEAD
+	// is unborn), because then raw visible files can be mistaken for that stale
+	// tree plus edits.
+	status.ProjectionOverStaleRef = localExists && headTree != acceptedTree
 	status.ProjectionOnlyChanges = status.ProjectionOverStaleRef && !status.UserWorktreeChanged && !status.UserIndexChanged
 	return status, nil
 }
@@ -1135,6 +1144,34 @@ func (r *Repository) ChangedPaths(ctx context.Context, from, to string) ([]strin
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+// TreeEntries returns the exact path -> mode/object manifest for a tree. It
+// intentionally includes symlinks and gitlinks so authorization proofs do not
+// degrade those entries into ordinary file content.
+func (r *Repository) TreeEntries(ctx context.Context, object string) (map[string]TreeEntry, error) {
+	tree, err := r.resolveTree(ctx, object)
+	if err != nil {
+		return nil, err
+	}
+	output, err := r.run(ctx, []string{"GIT_OPTIONAL_LOCKS=0"}, nil,
+		"ls-tree", "-r", "-z", "--full-tree", tree)
+	if err != nil {
+		return nil, fmt.Errorf("read tree manifest: %w", err)
+	}
+	entries := make(map[string]TreeEntry)
+	for _, record := range splitNull([]byte(output)) {
+		header, path, ok := strings.Cut(record, "\t")
+		if !ok {
+			return nil, fmt.Errorf("parse tree manifest record %q", record)
+		}
+		fields := strings.Fields(header)
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("parse tree manifest header %q", header)
+		}
+		entries[path] = TreeEntry{Mode: fields[0], OID: fields[2]}
+	}
+	return entries, nil
 }
 
 // WorktreeTree snapshots the visible worktree relative to an expected Hop
