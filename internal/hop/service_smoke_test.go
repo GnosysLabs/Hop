@@ -1595,8 +1595,15 @@ func TestDisjointProposalsLandAndUndoMovesForward(t *testing.T) {
 	})
 
 	undo, err := service.Undo(ctx)
-	if err != nil {
+	var committed *CommittedStateError
+	if err != nil && !errors.As(err, &committed) {
 		t.Fatal(err)
+	}
+	if committed != nil {
+		undo = committed.State
+		if !strings.Contains(committed.Error(), "intended local branch has no commit tip") {
+			t.Fatalf("unborn undo warning = %v", committed)
+		}
 	}
 	if undo.ID == acceptedOne.State.ID || undo.ID == acceptedTwo.State.ID {
 		t.Fatal("undo rewrote an old state instead of creating a new one")

@@ -104,7 +104,7 @@ func (r *Repository) inspectGitSync(
 	} else if reason != "" {
 		return blockedGitSync(acceptedCommit, intendedRef, "", reason, action), "", nil
 	}
-	localTip, exists, err := r.optionalGitOutput(ctx, "rev-parse", "--verify", intendedRef+"^{commit}")
+	localTip, exists, err := r.optionalGitOutput(ctx, "rev-parse", "--verify", "--quiet", intendedRef+"^{commit}")
 	if err != nil {
 		return result, "", err
 	}
