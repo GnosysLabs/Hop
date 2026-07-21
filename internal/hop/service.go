@@ -1732,7 +1732,7 @@ func (s *Service) adoptCleanGitAdvancement(
 	} else if reason != "" {
 		return nil, nil, false, &RootConflictError{Reason: reason + "; " + action}
 	}
-	localTip, exists, err := s.Repo.ReadRef(ctx, intendedRef)
+	localTip, exists, err := s.Repo.optionalGitOutput(ctx, "rev-parse", "--verify", "--quiet", intendedRef+"^{commit}")
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -1854,7 +1854,7 @@ func (s *Service) revalidateCleanGitAdvancement(
 	} else if reason != "" {
 		return &RootConflictError{Reason: reason + "; " + action}
 	}
-	refTip, exists, err := s.Repo.ReadRef(ctx, intendedRef)
+	refTip, exists, err := s.Repo.optionalGitOutput(ctx, "rev-parse", "--verify", "--quiet", intendedRef+"^{commit}")
 	if err != nil {
 		return err
 	}
