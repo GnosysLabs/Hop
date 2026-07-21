@@ -55,6 +55,13 @@ proposal.
 final-tree validation, advances accepted history with compare-and-swap, and
 safely materializes the result into the visible project directory.
 
+If another tool made a clean strict-fast-forward commit after the proposal was
+frozen, Hop proves that the intended branch, attached HEAD, real index, and
+visible tree all exactly agree, adopts that existing commit as a concurrent
+baseline, and continues the proposal in the same landing call. A failed final
+validation keeps the frozen proposal retryable; changing only the validation
+command or environment does not require a new proposal.
+
 `hop accept` is lower-level controller behavior: it advances internal accepted
 state but intentionally leaves the visible folder unchanged.
 

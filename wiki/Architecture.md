@@ -66,6 +66,17 @@ derived Git refs can be repaired by `hop doctor --repair`. Visible-root landing
 also tracks which accepted state is physically visible, allowing safe catch-up
 with `hop sync` without treating a divergent folder as disposable.
 
+Before classifying a changed visible root, landing checks whether an ordinary
+Git commit already explains it exactly. Adoption requires the current accepted
+and materialized states to agree, the intended branch to be attached, its tip
+to be a strict fast-forward descendant of the accepted commit, no active Git
+operation or lock, and the branch tip, HEAD, real index, and visible tree to
+resolve to the same tree. Hop revalidates all of those inputs immediately before
+compare-and-swap, records the existing commit as a provenance-bound accepted
+baseline, performs no Git or filesystem write, and continues the original
+proposal in the same landing call. Any missing proof takes the existing
+fail-closed path.
+
 Branch/index synchronization is a second, fail-closed projection transaction.
 Under Hop's acceptance lock it verifies the accepted commit/tree and durable
 materialized marker, exact visible-tree manifest, real index tree, recorded

@@ -138,11 +138,17 @@ changes compose automatically. It validates and advances accepted state, then
 safely materializes that tree into the selected visible project root. Ordinary
 nonignored root edits are first captured as an explicit accepted transition
 only when their visible base is provable, then merged against the proposal;
-genuine overlaps enter the same agent reconciliation flow. When an existing
-branch's tree differs from Hop's claimed materialized tree, changed visible
-files are ambiguous and capture fails closed instead of authorizing the whole
-filesystem diff. Staged/index state and ignored destination collisions remain
-protected. Materialization writes visible files through a disposable index.
+genuine overlaps enter the same agent reconciliation flow. A normal external
+Git commit on the intended branch is adopted automatically before this
+classification only when the branch tip, attached HEAD, real index, and visible
+tree all exactly match one strict fast-forward descendant of the accepted
+commit. The existing commit becomes a provenance-bound concurrent baseline and
+the original proposal continues landing in the same invocation. When an
+existing branch's tree differs without that complete proof, changed visible
+files remain ambiguous and capture fails closed instead of authorizing the
+whole filesystem diff. Staged/index state and ignored destination collisions
+remain protected. Materialization writes visible files through a disposable
+index.
 Once the visible tree is durably recorded, Hop separately fast-forwards the
 intended attached local branch and replaces only its projection-only real index
 when every safety precondition is revalidated. It never uses `reset --hard`,
@@ -238,7 +244,11 @@ protocol and must not be required for repositories hosted elsewhere.
 | `23` | Visible project root diverged, contains an overwrite collision, or explicit Git synchronization was blocked |
 | `24` | Exact-tree provenance or authorization-manifest verification failed |
 
-A failed `hop check` or final landing check persists its evidence. A blocked or failed landing does not advance accepted state.
+A failed `hop check` or final landing check persists its evidence. Final-tree
+validation leaves the frozen proposal as the attempt head, so correcting only
+the command or environment retries the same proposal without re-proposing.
+Failure never accepts the proposal. A separately proven clean Git commit may
+already have become the accepted concurrent baseline before that check runs.
 
 ## Capture modes
 

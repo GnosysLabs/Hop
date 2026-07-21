@@ -93,6 +93,16 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 	ctx := context.Background()
 	command := args[0]
 	commandArgs := args[1:]
+	if len(commandArgs) == 1 && (commandArgs[0] == "--help" || commandArgs[0] == "-h") {
+		switch command {
+		case "land":
+			fmt.Fprintln(stdout, "Usage: hop land STATE [-- COMMAND [ARG...]]\n\nAccept STATE, validate the exact integrated tree when a command is supplied, safely synchronize the visible project and Git branch/index, then publish to the configured upstream.")
+			return 0
+		case "accept":
+			fmt.Fprintln(stdout, "Usage: hop accept STATE [-- COMMAND [ARG...]]\n\nAccept STATE internally without changing the visible project root.")
+			return 0
+		}
+	}
 	if command == "version" || command == "--version" {
 		version := effectiveVersion()
 		if jsonOutput {
@@ -504,7 +514,11 @@ func RunCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "Landed as %s · tree %s\n", result.State.ID, shortHash(result.State.SourceTree))
 			if result.CapturedRoot != nil {
-				fmt.Fprintf(stdout, "Captured concurrent visible-root changes as %s\n", result.CapturedRoot.ID)
+				if result.CapturedRoot.Provenance != nil && result.CapturedRoot.Provenance.Operation == "adopt-git-head" {
+					fmt.Fprintf(stdout, "Adopted clean concurrent Git commit %s as %s\n", shortHash(result.CapturedRoot.GitCommit), result.CapturedRoot.ID)
+				} else {
+					fmt.Fprintf(stdout, "Captured concurrent visible-root changes as %s\n", result.CapturedRoot.ID)
+				}
 			}
 			fmt.Fprintf(stdout, "Synchronized visible root: %s\n", result.MaterializedRoot)
 			printGitSync(stdout, result.GitSync)

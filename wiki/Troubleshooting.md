@@ -75,8 +75,12 @@ need to perform ordinary source merges.
 
 ## Exit code 22: validation failed
 
-The accepted head did not advance. Inspect the recorded output, fix the attempt
-workspace, and rerun the check.
+The proposal was not accepted. Inspect the recorded output. If only the command
+or environment was wrong, retry the same `hop land R_... -- ...`; failed final
+validation deliberately leaves that frozen proposal as the attempt head. If
+source must change, fix the attempt workspace, rerun `hop check`, and create a
+new proposal. A clean external Git commit may already have been adopted as an
+independent concurrent baseline before the final check ran.
 
 ## Exit code 23 or `Root: diverged`
 
@@ -151,6 +155,16 @@ publication destination when it exactly matches the currently attached branch.
 An older local-only state without a durable branch or matching publication ref
 is intentionally not guessed; create and land a fresh proposal on the intended
 branch to establish that proof.
+
+## A clean commit from another tool appeared before landing
+
+No manual recovery is required when it is a strict fast-forward on Hop's
+intended attached branch and the branch tip, HEAD, real index, and visible files
+all exactly agree. Run the original `hop land` once; Hop adopts the existing
+commit as a provenance-bound concurrent baseline and continues the proposal.
+If Hop refuses, the repository is not actually in that clean shape. Follow its
+specific reason—usually staged or dirty work, another branch, divergence, a Git
+operation, or a concurrent change—instead of resetting or recommitting files.
 
 ## A secret was pasted
 

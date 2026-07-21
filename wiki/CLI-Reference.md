@@ -24,7 +24,7 @@ release.
 | `hop check STATE -- COMMAND...` | Validate an immutable checkpoint |
 | `hop propose [--summary TEXT] STATE` | Freeze a candidate proposal |
 | `hop complete --summary TEXT (--stdin \| --heredoc) PROMPT` | Record the summary and exact final response for a prompt |
-| `hop land PROPOSAL [-- COMMAND...]` | Accept and synchronize the visible root |
+| `hop land PROPOSAL [-- COMMAND...]` | Adopt any proven clean branch advance, then accept and synchronize the visible root |
 | `hop refresh PROPOSAL` | Explicitly prepare/reuse conflict reconciliation |
 
 `hop start` aliases `hop prompt`; `hop reconcile` aliases `hop refresh`.
@@ -90,6 +90,14 @@ automatically after normal landing/materialization and after prompt capture in
 `hop begin` so safely repairable older projections self-heal. Publication may
 still be pending or failed: the local branch remains clean and ordinary Git
 reports its truthful relationship to the upstream.
+
+Before `hop land` classifies visible-root drift, it also recognizes a clean
+strict-fast-forward commit made by another Git-compatible tool. Adoption
+requires the intended attached branch tip, HEAD, real index, and visible tree
+to agree exactly. Hop records that immutable commit as a concurrent baseline
+without rewriting Git or files, then continues the original proposal in the
+same invocation. Failed final validation keeps that proposal retryable when its
+source tree has not changed.
 
 Publication is `not_configured`, `pending`, `current`, `failed`, or `unknown`
 for a pre-migration accepted state. Failures retain a sanitized error category,

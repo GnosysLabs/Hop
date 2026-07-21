@@ -2185,6 +2185,90 @@ func TestLandMaterializesVisibleRootAndSafelyFastForwardsGitState(t *testing.T) 
 	}
 }
 
+func TestLandAdoptsCleanExternalGitCommitAndLandsProposalOnce(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runGitTest(t, root, "init", "--quiet")
+	writeTestFile(t, filepath.Join(root, "base.txt"), "base\n")
+	runGitTest(t, root, "add", "base.txt")
+	runGitTest(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "initial")
+
+	service, _, err := InitProject(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTest(t, root, "init", "--quiet", "--bare", remote)
+	runGitTest(t, root, "remote", "add", "origin", remote)
+	branch := runGitTest(t, root, "symbolic-ref", "--short", "HEAD")
+	runGitTest(t, root, "config", "branch."+branch+".remote", "origin")
+	runGitTest(t, root, "config", "branch."+branch+".merge", "refs/heads/"+branch)
+	seed, err := service.CreatePrompt(ctx, "Establish a Hop baseline", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(seed.Workspace, "baseline.txt"), "baseline\n")
+	seedProposal, err := service.Propose(ctx, seed.Prompt.ID, "Establish Hop baseline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Land(ctx, seedProposal.Proposal.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.CreatePrompt(ctx, "Add proposal work", "", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(started.Workspace, "proposal.txt"), "proposal\n")
+	proposal, err := service.Propose(ctx, started.Prompt.ID, "Add proposal work")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduce the real multi-agent failure: another agent makes a normal,
+	// clean Git commit after this proposal was frozen but before it lands.
+	writeTestFile(t, filepath.Join(root, "external.txt"), "external\n")
+	runGitTest(t, root, "add", "external.txt")
+	runGitTest(t, root, "-c", "user.name=Other", "-c", "user.email=other@example.com", "commit", "--quiet", "-m", "external agent commit")
+	externalCommit := runGitTest(t, root, "rev-parse", "HEAD")
+	runGitTest(t, root, "push", "--quiet", "origin", branch)
+	beforeBytes, err := os.ReadFile(filepath.Join(root, "external.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	landed, err := service.Land(ctx, proposal.Proposal.ID, nil)
+	if err != nil {
+		t.Fatalf("single land after clean external commit: %v", err)
+	}
+	if landed.CapturedRoot == nil || landed.CapturedRoot.Summary != "Adopt clean Git branch advancement" {
+		t.Fatalf("adopted baseline = %#v", landed.CapturedRoot)
+	}
+	if landed.CapturedRoot.GitCommit != externalCommit {
+		t.Fatalf("adopted commit = %s, want external commit %s", landed.CapturedRoot.GitCommit, externalCommit)
+	}
+	if !slices.Equal(landed.CapturedRootPaths, []string{"external.txt"}) {
+		t.Fatalf("adopted paths = %v", landed.CapturedRootPaths)
+	}
+	afterBytes, err := os.ReadFile(filepath.Join(root, "external.txt"))
+	if err != nil || !slices.Equal(beforeBytes, afterBytes) {
+		t.Fatalf("external file bytes changed: before=%q after=%q err=%v", beforeBytes, afterBytes, err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(root, "proposal.txt")); err != nil || string(contents) != "proposal\n" {
+		t.Fatalf("proposal file = %q, err=%v", string(contents), err)
+	}
+	if got := runGitTest(t, root, "status", "--porcelain=v1"); got != "" {
+		t.Fatalf("raw Git status after one-pass land = %q", got)
+	}
+	if got := runGitTest(t, root, "rev-parse", "HEAD"); got != landed.State.GitCommit {
+		t.Fatalf("HEAD = %s, want final accepted commit %s", got, landed.State.GitCommit)
+	}
+	if got := runGitTest(t, root, "merge-base", "--is-ancestor", externalCommit, landed.State.GitCommit); got != "" {
+		t.Fatalf("external commit is not an ancestor of final accepted commit")
+	}
+}
+
 func TestLandAutomaticallyPushesAcceptedCommit(t *testing.T) {
 	ctx := context.Background()
 	service, initial := newTestProject(t, map[string]string{"base.txt": "base\n"})
@@ -3130,6 +3214,30 @@ func TestFailedLandValidationDoesNotMaterializeVisibleRoot(t *testing.T) {
 	head, err := service.Store.AcceptedHead(ctx)
 	if err != nil || head.ID != initial.ID {
 		t.Fatalf("accepted head = %s, err=%v", head.ID, err)
+	}
+	attempt, err := service.Store.GetAttempt(ctx, proposal.Proposal.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.HeadStateID != proposal.Proposal.ID {
+		t.Fatalf("failed validation invalidated proposal: attempt head = %s, want %s", attempt.HeadStateID, proposal.Proposal.ID)
+	}
+	retried, err := service.Land(ctx, proposal.Proposal.ID, []string{"sh", "-c", "exit 0"})
+	if err != nil {
+		t.Fatalf("retry same frozen proposal after correcting validation: %v", err)
+	}
+	if retried.State.SourceTree != proposal.Proposal.SourceTree {
+		t.Fatalf("retried tree = %s, want frozen proposal tree %s", retried.State.SourceTree, proposal.Proposal.SourceTree)
+	}
+}
+
+func TestLandHelpDoesNotParseHelpAsProposalID(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := RunCLI([]string{"land", "--help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("hop land --help exit = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Usage: hop land STATE") {
+		t.Fatalf("hop land --help output = %q", stdout.String())
 	}
 }
 

@@ -16,6 +16,7 @@ and safe multi-agent integration.
 - **Intent is versioned.** Each prompt is connected to the code it produced.
 - **Agents stay isolated.** Parallel tasks do not edit the same working folder.
 - **Integration is intelligent.** Compatible changes merge automatically;
+  clean commits from other tools become concurrent inputs automatically, and
   genuine conflicts return to an agent for reconciliation.
 - **Validation follows the code.** Checks run against immutable work and the
   exact final tree before it becomes accepted.

@@ -33,6 +33,14 @@ hop propose --summary "Implemented the requested behavior" P_...
 hop land R_... -- go test ./...
 ```
 
+One `hop land` call also handles a normal clean commit made by another tool or
+agent after the proposal was frozen. Hop adopts that exact strict-fast-forward
+commit as the concurrent baseline and composes the proposal onto it. Agents do
+not reset, copy, re-propose, or manually reconcile a clean committed advance.
+If only final validation fails, they inspect the evidence and retry the same
+proposal with the corrected command or environment; a new proposal is needed
+only after source changes.
+
 Immediately before the agent sends its final response, it records both the
 concise summary and the exact response text:
 

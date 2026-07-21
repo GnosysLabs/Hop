@@ -917,6 +917,87 @@ func (s *Store) AppendState(
 	return state, nil
 }
 
+// RecordState inserts immutable attempt evidence without advancing the attempt
+// head. It is used for observations about a frozen state, such as a failed
+// final-tree validation, that must remain durable but must not invalidate the
+// proposal being observed.
+func (s *Store) RecordState(
+	ctx context.Context,
+	state State,
+	parents []Parent,
+	expectedAttemptHeadID string,
+) (State, error) {
+	if state.AttemptID == "" {
+		return State{}, errors.New("hop: recorded state requires an attempt ID")
+	}
+	if expectedAttemptHeadID == "" {
+		return State{}, errors.New("hop: recorded state requires the expected attempt head")
+	}
+	if state.ID == "" {
+		state.ID = newID(stateIDPrefix(state.Kind))
+	}
+	if state.Kind == "" {
+		return State{}, errors.New("hop: recorded state kind is required")
+	}
+	if state.CreatedAt.IsZero() {
+		state.CreatedAt = time.Now().UTC()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return State{}, fmt.Errorf("begin state recording: %w", err)
+	}
+	defer tx.Rollback()
+	attempt, err := attemptTx(ctx, tx, state.AttemptID)
+	if err != nil {
+		return State{}, err
+	}
+	if attempt.HeadStateID != expectedAttemptHeadID {
+		return State{}, &HeadChangedError{Scope: "attempt", Expected: expectedAttemptHeadID, Actual: attempt.HeadStateID}
+	}
+	head, err := stateTx(ctx, tx, expectedAttemptHeadID)
+	if err != nil {
+		return State{}, fmt.Errorf("read recorded state head: %w", err)
+	}
+	if state.TaskID == "" {
+		state.TaskID = attempt.TaskID
+	}
+	if state.TaskID != attempt.TaskID {
+		return State{}, errors.New("hop: recorded state task does not match attempt")
+	}
+	if state.Agent == "" {
+		state.Agent = attempt.Agent
+	}
+	if state.SourceTree == "" {
+		state.SourceTree = head.SourceTree
+	}
+	if state.GitCommit == "" {
+		state.GitCommit = head.GitCommit
+	}
+	if state.CanonicalAnchorID == "" {
+		state.CanonicalAnchorID = head.CanonicalAnchorID
+		if state.CanonicalAnchorID == "" {
+			state.CanonicalAnchorID = attempt.BaseStateID
+		}
+	}
+	parents = chooseParents(state.Parents, parents)
+	parents = ensureParentRole(parents, "run_parent", expectedAttemptHeadID)
+	parents = canonicalizeParents(parents)
+	state.Parents = parents
+	if err := insertStateTx(ctx, tx, state, parents); err != nil {
+		return State{}, err
+	}
+	if err := insertEventTx(ctx, tx, Event{
+		Kind: "state.recorded", TaskID: state.TaskID, AttemptID: state.AttemptID, StateID: state.ID,
+	}, map[string]string{"kind": string(state.Kind)}); err != nil {
+		return State{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return State{}, fmt.Errorf("commit state recording: %w", err)
+	}
+	return state, nil
+}
+
 // CASAccept atomically inserts an accepted state and advances accepted_head only
 // if it still equals expectedHeadID. Any inserted state is rolled back when the
 // compare-and-swap fails.

@@ -1584,6 +1584,11 @@ func (s *Service) captureVisibleRoot(ctx context.Context) (*State, []string, err
 	if actualTree == materialized.SourceTree {
 		return nil, nil, nil
 	}
+	if adopted, paths, ok, adoptErr := s.adoptCleanGitAdvancement(ctx, materialized, actualTree); adoptErr != nil {
+		return adopted, paths, adoptErr
+	} else if ok {
+		return adopted, paths, nil
+	}
 	gitStatus, err := s.Repo.GitStatusForAccepted(ctx, materialized.GitCommit, materialized.SourceTree)
 	if err != nil {
 		return nil, nil, err
@@ -1681,6 +1686,197 @@ func (s *Service) captureVisibleRoot(ctx context.Context) (*State, []string, err
 		return &captured, paths, &CommittedStateError{State: captured, Err: fmt.Errorf("record captured visible root: %w", err)}
 	}
 	return &captured, paths, nil
+}
+
+// adoptCleanGitAdvancement makes ordinary Git commits a first-class concurrent
+// input before visible-root drift is classified. It advances only Hop's durable
+// accepted/materialized baseline; it never moves a Git ref, rewrites the real
+// index, or touches an already-correct worktree.
+//
+// This is intentionally stricter than visible-root capture. The attached
+// intended branch, HEAD, real index, and visible tree must all name the exact
+// same strict fast-forward descendant of the current accepted commit. Any
+// uncommitted, staged, divergent, detached, or in-progress Git state falls back
+// to the existing fail-closed path.
+func (s *Service) adoptCleanGitAdvancement(
+	ctx context.Context,
+	materialized State,
+	actualTree string,
+) (*State, []string, bool, error) {
+	current, err := s.Store.AcceptedHead(ctx)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if current.ID != materialized.ID {
+		return nil, nil, false, nil
+	}
+	intendedRef, err := s.intendedBranchForAccepted(ctx, current)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	attachedRef, attached, err := s.Repo.AttachedHeadRef(ctx)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !attached {
+		return nil, nil, false, &RootConflictError{Reason: "Hop found a different visible tree, but HEAD is detached; attach HEAD to the intended branch without discarding work, then retry hop land"}
+	}
+	if intendedRef == "" {
+		return nil, nil, false, &RootConflictError{Reason: "Hop found a different visible tree, but has no durable proof of which branch it belongs to; preserve the current work and create a fresh Hop transition from the intended attached branch"}
+	}
+	if attachedRef != intendedRef {
+		return nil, nil, false, &RootConflictError{Reason: fmt.Sprintf("Hop found a different visible tree on %s, but the accepted state belongs to %s; preserve the work, switch to the intended branch, then retry hop land", attachedRef, intendedRef)}
+	}
+	if reason, action, err := s.Repo.gitOperationBlock(intendedRef, false, false); err != nil {
+		return nil, nil, false, err
+	} else if reason != "" {
+		return nil, nil, false, &RootConflictError{Reason: reason + "; " + action}
+	}
+	localTip, exists, err := s.Repo.ReadRef(ctx, intendedRef)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !exists || localTip == "" || localTip == current.GitCommit {
+		return nil, nil, false, nil
+	}
+	head, headExists, err := s.Repo.Head(ctx)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !headExists || head != localTip {
+		return nil, nil, false, &RootConflictError{Reason: "HEAD and the intended branch tip changed while Hop inspected the repository; wait for the Git operation to finish, then retry hop land"}
+	}
+	fastForward, err := s.Repo.IsAncestor(ctx, current.GitCommit, localTip)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !fastForward {
+		return nil, nil, false, &RootConflictError{Reason: "the local branch and Hop's accepted commit have diverged; preserve both histories and reconcile them through a Hop attempt"}
+	}
+	headTree, err := s.Repo.resolveTree(ctx, localTip)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if actualTree != headTree {
+		return nil, nil, false, nil
+	}
+	indexTree, err := s.Repo.userIndexTree(ctx)
+	if err != nil {
+		return nil, nil, false, &RootConflictError{Reason: "the real Git index could not be proven clean: " + err.Error() + "; preserve or finish the staged operation, then retry hop land"}
+	}
+	if indexTree != headTree {
+		paths, pathErr := s.Repo.ChangedPaths(ctx, headTree, indexTree)
+		if pathErr != nil {
+			return nil, nil, false, pathErr
+		}
+		return nil, paths, false, &RootConflictError{Paths: paths, Reason: "the real Git index contains staged changes; preserve or commit them intentionally, then retry hop land"}
+	}
+
+	paths, err := s.Repo.ChangedPaths(ctx, current.SourceTree, headTree)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	provenance, err := s.verifyAcceptance(ctx, current, headTree, []ProvenanceInput{{
+		Role: "git_head", BaseTree: current.SourceTree, CandidateTree: headTree,
+	}}, "adopt-git-head")
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if err := s.bindProvenanceBranch(ctx, provenance); err != nil {
+		return nil, nil, false, err
+	}
+	parents := canonicalizeParents([]Parent{{StateID: current.ID, Role: "canonical_parent", Order: 0}})
+	adopted := State{
+		ID:                newID("a"),
+		Kind:              StateAccepted,
+		CanonicalAnchorID: current.ID,
+		SourceTree:        headTree,
+		GitCommit:         localTip,
+		Summary:           "Adopt clean Git branch advancement",
+		Agent:             "git",
+		Provenance:        provenance,
+		CreatedAt:         time.Now().UTC(),
+		Parents:           parents,
+	}
+	adopted.Digest, err = digestState(adopted, parents)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if err := s.pinState(ctx, adopted); err != nil {
+		return nil, nil, false, err
+	}
+
+	// The project lock serializes Hop operations. Revalidate every external Git
+	// and filesystem input immediately before the durable compare-and-swap so a
+	// concurrent editor or Git command can never be adopted under a stale proof.
+	if err := s.revalidateCleanGitAdvancement(ctx, current, materialized, intendedRef, localTip, headTree); err != nil {
+		return nil, nil, false, err
+	}
+	adopted, err = s.Store.CASAccept(ctx, current.ID, adopted, parents)
+	if err != nil {
+		return nil, nil, false, mapHeadError(err)
+	}
+	if err := s.Repo.UpdateHiddenRef(ctx, acceptedRef, adopted.GitCommit); err != nil {
+		return &adopted, paths, true, &CommittedStateError{State: adopted, Err: fmt.Errorf("repair refs/hop/accepted after adopting clean Git advancement: %w", err)}
+	}
+	if err := s.Store.CASMaterializedHead(ctx, materialized.ID, adopted.ID); err != nil {
+		return &adopted, paths, true, &CommittedStateError{State: adopted, Err: fmt.Errorf("record clean Git advancement as the visible baseline: %w", err)}
+	}
+	_ = s.recordPendingPublication(ctx, adopted, "")
+	return &adopted, paths, true, nil
+}
+
+func (s *Service) revalidateCleanGitAdvancement(
+	ctx context.Context,
+	current, materialized State,
+	intendedRef, localTip, headTree string,
+) error {
+	acceptedNow, err := s.Store.AcceptedHead(ctx)
+	if err != nil {
+		return err
+	}
+	materializedNow, err := s.Store.MaterializedHead(ctx)
+	if err != nil {
+		return err
+	}
+	if acceptedNow.ID != current.ID || materializedNow.ID != materialized.ID {
+		return &RootConflictError{Reason: "Hop's accepted or materialized state changed during validation; retry hop land against the new state"}
+	}
+	attachedRef, attached, err := s.Repo.AttachedHeadRef(ctx)
+	if err != nil {
+		return err
+	}
+	if !attached || attachedRef != intendedRef {
+		return &RootConflictError{Reason: "the attached Git branch changed during validation; wait for the concurrent Git operation to finish, then retry hop land"}
+	}
+	if reason, action, err := s.Repo.gitOperationBlock(intendedRef, false, false); err != nil {
+		return err
+	} else if reason != "" {
+		return &RootConflictError{Reason: reason + "; " + action}
+	}
+	refTip, exists, err := s.Repo.ReadRef(ctx, intendedRef)
+	if err != nil {
+		return err
+	}
+	head, headExists, err := s.Repo.Head(ctx)
+	if err != nil {
+		return err
+	}
+	if !exists || !headExists || refTip != localTip || head != localTip {
+		return &RootConflictError{Reason: "the local branch tip changed during validation; wait for the concurrent Git operation to finish, then retry hop land"}
+	}
+	indexTree, err := s.Repo.userIndexTree(ctx)
+	if err != nil || indexTree != headTree {
+		return &RootConflictError{Reason: "the real Git index changed during validation; preserve or finish the staged operation, then retry hop land"}
+	}
+	visibleTree, err := s.Repo.WorktreeTree(ctx, headTree)
+	if err != nil {
+		return err
+	}
+	if visibleTree != headTree {
+		return &RootConflictError{Reason: "the visible project files changed during validation; preserve the new edits, then retry hop land"}
+	}
+	return nil
 }
 
 func withoutPortableHopRecords(paths []string) []string {
@@ -2332,10 +2528,10 @@ func (s *Service) Undo(ctx context.Context) (State, error) {
 	return undo, nil
 }
 
-// recordValidationFailure turns a failed final-tree check into an immutable
-// descendant state when the proposal is still the attempt head. If a follow-up
-// raced with validation, the caller retains the validation ref and tree-bound
-// evidence without rewriting the newer attempt lineage.
+// recordValidationFailure records a failed final-tree check as immutable
+// evidence without advancing the attempt head away from its frozen proposal.
+// The exact same proposal can therefore be retried after fixing an environment
+// problem or correcting the validation command; its source tree never changes.
 func (s *Service) recordValidationFailure(
 	ctx context.Context,
 	proposal State,
@@ -2373,12 +2569,10 @@ func (s *Service) recordValidationFailure(
 	if err := s.pinState(ctx, failed); err != nil {
 		return State{}, false
 	}
-	failed, err = s.Store.AppendState(ctx, failed, parents, proposal.ID)
+	failed, err = s.Store.RecordState(ctx, failed, parents, proposal.ID)
 	if err != nil {
 		return State{}, false
 	}
-	_ = s.Store.UpdateAttemptStatus(ctx, proposal.AttemptID, "changes_requested")
-	_ = s.Store.UpdateTaskStatus(ctx, proposal.TaskID, "changes_requested")
 	return failed, true
 }
 

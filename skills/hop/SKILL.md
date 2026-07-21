@@ -183,6 +183,18 @@ hosts.
 
    Same-file edits with compatible hunks merge automatically.
 
+   If another tool or agent made a normal clean commit on the intended branch
+   after this proposal was frozen, do not reconcile it manually. `hop land`
+   proves that HEAD, branch tip, real index, and visible files all exactly match
+   that strict fast-forward commit, adopts it as an immutable concurrent input,
+   and continues the original landing in this same command. Dirty files,
+   staging, divergence, detached/wrong branches, and Git operations still stop
+   safely.
+
+   A failed final validation does not invalidate the frozen proposal. Inspect
+   the recorded evidence and retry the same `hop land <proposal-state>` with the
+   corrected environment or command. Re-propose only when source changes.
+
    Exit `23` may mean the visible folder differs while a genuinely older Git
    branch tree sits beneath Hop's newer projection. In that state the
    filesystem cannot prove which paths were deliberate edits, so Hop refuses
