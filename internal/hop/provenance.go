@@ -160,7 +160,19 @@ func validateStoredProvenance(state State, base State) error {
 	if proof.Version != provenanceVersion || proof.BaseStateID != base.ID || proof.BaseTree != base.SourceTree || proof.CandidateTree != state.SourceTree {
 		return &ProvenanceError{Operation: proof.Operation, Reason: "authorization proof does not bind the expected base state and candidate tree"}
 	}
-	manifestDigest, err := digestJSON(proof.Manifest)
+	manifest := proof.Manifest
+	if manifest == nil {
+		if proof.BaseTree != proof.CandidateTree {
+			return &ProvenanceError{Operation: proof.Operation, Reason: "authorization manifest is missing for a changed candidate tree"}
+		}
+		// Empty manifests were historically built as a non-nil empty slice and
+		// hashed as JSON `[]`. The json `omitempty` tag then omitted that slice
+		// from SQLite, so decoding produced nil (`null`) and caused a false
+		// digest mismatch. Equal immutable tree IDs independently prove that the
+		// only valid manifest is empty, making this canonicalization lossless.
+		manifest = []TreeDelta{}
+	}
+	manifestDigest, err := digestJSON(manifest)
 	if err != nil || manifestDigest != proof.ManifestDigest {
 		return &ProvenanceError{Operation: proof.Operation, Reason: "authorization manifest digest mismatch"}
 	}
